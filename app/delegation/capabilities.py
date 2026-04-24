@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from app.config.agents import AGENTS
-from app.protocol import Capability
 
 
 def known_capabilities() -> set[str]:
@@ -12,8 +13,8 @@ def known_capabilities() -> set[str]:
     return capabilities
 
 
-def parse_capabilities(raw_capabilities: list[Capability]) -> set[str]:
-    parsed = set(raw_capabilities)
+def parse_capabilities(raw_capabilities: Sequence[str]) -> set[str]:
+    parsed: set[str] = set(raw_capabilities)
     unknown = parsed - known_capabilities()
     if unknown:
         raise ValueError(f"unknown capabilities: {sorted(unknown)}")
