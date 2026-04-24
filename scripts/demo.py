@@ -37,8 +37,20 @@ async def main() -> None:
         print(json.dumps(denied_response.json(), ensure_ascii=False, indent=2))
 
         print("\n== 审计日志 ==")
-        logs_response = await client.get("/audit/logs")
-        print(json.dumps(logs_response.json(), ensure_ascii=False, indent=2))
+        report_trace = report_response.json().get("trace_id")
+        denied_logs = await client.get("/audit/logs")
+        latest_denied_trace = next(
+            (
+                log["trace_id"]
+                for log in reversed(denied_logs.json())
+                if log["caller_agent_id"] == "external_search_agent"
+            ),
+            None,
+        )
+        for trace_id in [report_trace, latest_denied_trace]:
+            if trace_id:
+                logs_response = await client.get(f"/audit/traces/{trace_id}")
+                print(json.dumps(logs_response.json(), ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

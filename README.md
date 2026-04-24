@@ -92,3 +92,47 @@ effective_capabilities = caller_delegatable ∩ target_static ∩ requested
 - 在 `delegation_service` 替换真实外置安全模型。
 - 增加 JWT、签名验签、Token 撤销、策略 DSL、Prompt Injection 防护。
 - 将单进程路由拆分成多服务部署，Agent 业务代码无需改变。
+
+## Mock 前置认证闭环
+
+当前 `DelegationEnvelope` 会携带 `auth_context`，模拟前置 Agent 身份认证与授权结果：
+
+```json
+{
+  "jti": "tok_001",
+  "sub": "doc_agent",
+  "exp": 9999999999,
+  "delegated_user": "user_123",
+  "agent_id": "doc_agent",
+  "capabilities": ["feishu.contact:read"],
+  "sig": null
+}
+```
+
+外置 `DelegationService` 的最小授权算法已升级为：
+
+```text
+effective = caller_token_caps ∩ target_agent_caps ∩ requested_caps ∩ user_caps
+```
+
+同时会做这些 mock 校验：
+
+- `jti` 是否在内存黑名单 `blacklist` 中。
+- token 来源校验占位 `verify_token_source()`，当前直接返回 `true`。
+- 伪签名校验 `verify_sig()`，缺少 `sig` 时兼容 mock 根请求。
+- 委托链连续性检查：最后一跳 `to_agent_id` 必须等于当前 `caller_agent_id`。
+- 授权通过后追加 `DelegationHop`，并将下一跳 `auth_context.capabilities` 收缩为 `effective_capabilities`。
+
+这些 mock 存储位于 `app/identity/mock_store.py`，后续可替换为真实 Agent Registry、JWT 黑名单、防重放存储和用户授权服务。
+
+### DelegationHop 与 DecisionDetail
+
+`delegation_chain` 只保留轻量、人类友好的链路：
+
+- `from_actor` / `to_agent_id`：这一跳从谁到谁。
+- `task_type`：这一跳要执行的任务。
+- `delegated_capabilities`：这一跳最终委托出去的能力；拒绝时为空。
+- `missing_capabilities`：这一跳缺少的能力；拒绝时用于解释这一跳为什么失败。
+- `decision`：`root/allow/deny`，其中 `root` 表示用户入口 mock 前置授权。
+
+完整授权复盘放在审计日志的 `decision_detail` 中，包括 `requested_capabilities`、`caller_token_capabilities`、`target_agent_capabilities`、`user_capabilities`、`effective_capabilities`、`missing_capabilities`、`missing_by`、`decision` 和 `reason`。

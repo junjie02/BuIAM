@@ -24,6 +24,7 @@ async def handle_task(envelope: DelegationEnvelope) -> AgentTaskResponse:
                 "feishu.bitable:read",
             ],
             delegation_chain=envelope.delegation_chain,
+            auth_context=envelope.auth_context,
             payload={"reason": "external agent tries to read enterprise data"},
         )
         result = {"delegation_envelope": child_envelope.model_dump()}

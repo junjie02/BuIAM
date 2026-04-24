@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from app.agents import doc
 from app.agents.registry import get_agent_handler
 from app.delegation.service import delegation_service, raise_for_denied
-from app.protocol import AgentTaskRequest, AgentTaskResponse, DelegationEnvelope, DelegationHop
+from app.protocol import AgentTaskRequest, AgentTaskResponse, AuthContext, DelegationEnvelope, DelegationHop
 from app.store.audit import init_db, list_logs
 
 
@@ -30,7 +30,10 @@ async def delegate_call(envelope: DelegationEnvelope) -> AgentTaskResponse:
     decision = delegation_service.authorize_and_record(envelope)
     raise_for_denied(decision)
 
-    authorized_envelope = delegation_service.append_hop(envelope)
+    authorized_envelope = delegation_service.append_hop(
+        envelope,
+        decision.effective_capabilities,
+    )
     handler = get_agent_handler(authorized_envelope.target_agent_id)
     if handler is None:
         raise HTTPException(
@@ -46,6 +49,7 @@ async def agent_task(agent_id: str, request: AgentTaskRequest) -> AgentTaskRespo
     if handler is None:
         raise HTTPException(status_code=404, detail={"error": "unknown_agent", "agent_id": agent_id})
 
+    root_auth_context = build_mock_root_auth_context(agent_id)
     root_envelope = DelegationEnvelope(
         trace_id=str(uuid4()),
         request_id=str(uuid4()),
@@ -58,9 +62,12 @@ async def agent_task(agent_id: str, request: AgentTaskRequest) -> AgentTaskRespo
                 from_actor="user",
                 to_agent_id=agent_id,
                 task_type=request.task_type,
-                capabilities=[],
+                delegated_capabilities=root_auth_context.capabilities,
+                missing_capabilities=[],
+                decision="root",
             )
         ],
+        auth_context=root_auth_context,
         payload=request.payload,
     )
     response = await handler(root_envelope)
@@ -98,3 +105,29 @@ def audit_logs():
 @app.get("/audit/traces/{trace_id}")
 def audit_trace(trace_id: str):
     return list_logs(trace_id=trace_id)
+
+
+def build_mock_root_auth_context(agent_id: str) -> AuthContext:
+    capabilities_by_agent = {
+        "doc_agent": [
+            "report:write",
+            "feishu.contact:read",
+            "feishu.wiki:read",
+            "feishu.bitable:read",
+            "web.public:read",
+        ],
+        "enterprise_data_agent": [
+            "feishu.contact:read",
+            "feishu.wiki:read",
+            "feishu.bitable:read",
+        ],
+        "external_search_agent": ["web.public:read"],
+    }
+    return AuthContext(
+        jti=f"tok_{uuid4()}",
+        sub=agent_id,
+        exp=9999999999,
+        delegated_user="user_123",
+        agent_id=agent_id,
+        capabilities=capabilities_by_agent.get(agent_id, []),
+    )

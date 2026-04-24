@@ -28,6 +28,7 @@ async def handle_task(envelope: DelegationEnvelope) -> AgentTaskResponse:
             "feishu.bitable:read",
         ],
         delegation_chain=envelope.delegation_chain,
+        auth_context=envelope.auth_context,
         payload={"report_topic": envelope.payload.get("topic", "飞书 AI 协作报告")},
     )
 
