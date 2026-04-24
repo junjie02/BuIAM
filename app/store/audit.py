@@ -6,31 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from app.protocol import AuditLog, DelegationDecision, DelegationEnvelope
-
-
-DB_PATH = Path("data/audit.db")
+from app.store.chain import append_chain_hop, append_chain_hops_if_empty
+from app.store.schema import DB_PATH, init_schema
 
 
 def init_db(db_path: Path = DB_PATH) -> None:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS audit_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                trace_id TEXT NOT NULL,
-                request_id TEXT NOT NULL,
-                caller_agent_id TEXT NOT NULL,
-                target_agent_id TEXT NOT NULL,
-                requested_capabilities TEXT NOT NULL,
-                effective_capabilities TEXT NOT NULL,
-                decision TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                delegation_chain TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
+    init_schema(db_path)
 
 
 def record_decision(
@@ -39,6 +20,18 @@ def record_decision(
     db_path: Path = DB_PATH,
 ) -> None:
     init_db(db_path)
+    append_chain_hops_if_empty(
+        trace_id=envelope.trace_id,
+        request_id=envelope.request_id,
+        hops=envelope.delegation_chain,
+        db_path=db_path,
+    )
+    append_chain_hop(
+        trace_id=envelope.trace_id,
+        request_id=envelope.request_id,
+        hop=delegation_decision_hop(envelope, decision),
+        db_path=db_path,
+    )
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             """
@@ -51,8 +44,9 @@ def record_decision(
                 effective_capabilities,
                 decision,
                 reason,
-                delegation_chain
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                delegation_chain,
+                decision_detail
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 envelope.trace_id,
@@ -63,10 +57,8 @@ def record_decision(
                 json.dumps(decision.effective_capabilities, ensure_ascii=False),
                 decision.decision,
                 decision.reason,
-                json.dumps(
-                    [hop.model_dump() for hop in envelope.delegation_chain],
-                    ensure_ascii=False,
-                ),
+                "[]",
+                decision.to_detail().model_dump_json(),
             ),
         )
 
@@ -95,8 +87,21 @@ def list_logs(db_path: Path = DB_PATH, trace_id: str | None = None) -> list[Audi
             effective_capabilities=json.loads(row["effective_capabilities"]),
             decision=row["decision"],
             reason=row["reason"],
-            delegation_chain=json.loads(row["delegation_chain"]),
+            decision_detail=json.loads(row["decision_detail"] or "{}"),
             created_at=row["created_at"],
         )
         for row in rows
     ]
+
+
+def delegation_decision_hop(envelope: DelegationEnvelope, decision: DelegationDecision):
+    from app.protocol import DelegationHop
+
+    return DelegationHop(
+        from_actor=envelope.caller_agent_id,
+        to_agent_id=envelope.target_agent_id,
+        task_type=envelope.task_type,
+        delegated_capabilities=decision.effective_capabilities if decision.decision == "allow" else [],
+        missing_capabilities=decision.missing_capabilities,
+        decision=decision.decision,
+    )

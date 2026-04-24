@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from app.delegation.client import delegation_client
 from app.protocol import AgentTaskResponse, DelegationEnvelope
-from app.tools.web import search_public_web
+from examples.tools.web import search_public_web
 
 
 AGENT_ID = "external_search_agent"
@@ -24,6 +24,7 @@ async def handle_task(envelope: DelegationEnvelope) -> AgentTaskResponse:
                 "feishu.bitable:read",
             ],
             delegation_chain=envelope.delegation_chain,
+            auth_context=envelope.auth_context,
             payload={"reason": "external agent tries to read enterprise data"},
         )
         result = {"delegation_envelope": child_envelope.model_dump()}

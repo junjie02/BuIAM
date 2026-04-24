@@ -1,93 +1,29 @@
 from __future__ import annotations
 
-from uuid import uuid4
+from fastapi import FastAPI
 
-from fastapi import FastAPI, HTTPException
-
-
-from app.agents import doc
-from app.agents.registry import get_agent_handler
-from app.delegation.service import delegation_service, raise_for_denied
-from app.protocol import AgentTaskRequest, AgentTaskResponse, DelegationEnvelope, DelegationHop
-from app.store.audit import init_db, list_logs
+from app.gateway.routes import router as gateway_router
+from app.identity.routes import router as identity_router
+from app.registry.routes import router as registry_router
+from app.store.audit import list_logs
+from app.store.chain import list_chain
+from app.store.schema import init_schema
 
 
-app = FastAPI(title="BuIAM Delegation Protocol MVP")
+app = FastAPI(title="BuIAM Agent Security Service")
+app.include_router(gateway_router)
+app.include_router(identity_router)
+app.include_router(registry_router)
 
 
 @app.on_event("startup")
 def on_startup() -> None:
-    init_db()
+    init_schema()
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-@app.post("/delegate/call")
-async def delegate_call(envelope: DelegationEnvelope) -> AgentTaskResponse:
-    decision = delegation_service.authorize_and_record(envelope)
-    raise_for_denied(decision)
-
-    authorized_envelope = delegation_service.append_hop(envelope)
-    handler = get_agent_handler(authorized_envelope.target_agent_id)
-    if handler is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"error": "unknown_agent", "agent_id": authorized_envelope.target_agent_id},
-        )
-    return await handler(authorized_envelope)
-
-
-@app.post("/agents/{agent_id}/tasks")
-async def agent_task(agent_id: str, request: AgentTaskRequest) -> AgentTaskResponse:
-    handler = get_agent_handler(agent_id)
-    if handler is None:
-        raise HTTPException(status_code=404, detail={"error": "unknown_agent", "agent_id": agent_id})
-
-    root_envelope = DelegationEnvelope(
-        trace_id=str(uuid4()),
-        request_id=str(uuid4()),
-        caller_agent_id="user",
-        target_agent_id=agent_id,
-        task_type=request.task_type,
-        requested_capabilities=[],
-        delegation_chain=[
-            DelegationHop(
-                from_actor="user",
-                to_agent_id=agent_id,
-                task_type=request.task_type,
-                capabilities=[],
-            )
-        ],
-        payload=request.payload,
-    )
-    response = await handler(root_envelope)
-
-    child_envelope_data = response.result.get("delegation_envelope")
-    if not child_envelope_data:
-        return response
-
-    child_response = await delegate_call(DelegationEnvelope.model_validate(child_envelope_data))
-
-    if agent_id == "doc_agent" and request.task_type == "generate_report":
-        report = await doc.generate_report(
-            str(request.payload.get("topic", "飞书 AI 协作报告")),
-            child_response.result,
-        )
-        return AgentTaskResponse(
-            agent_id=agent_id,
-            trace_id=root_envelope.trace_id,
-            task_type=request.task_type,
-            result={
-                "report": report,
-                "enterprise_data": child_response.result,
-                "delegation_trace": child_response.trace_id,
-            },
-        )
-
-    return child_response
 
 
 @app.get("/audit/logs")
@@ -97,4 +33,9 @@ def audit_logs():
 
 @app.get("/audit/traces/{trace_id}")
 def audit_trace(trace_id: str):
-    return list_logs(trace_id=trace_id)
+    return {"trace_id": trace_id, "logs": list_logs(trace_id=trace_id), "chain": list_chain(trace_id)}
+
+
+@app.get("/audit/traces/{trace_id}/chain")
+def audit_trace_chain(trace_id: str):
+    return {"trace_id": trace_id, "delegation_chain": list_chain(trace_id)}

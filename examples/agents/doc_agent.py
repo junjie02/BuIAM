@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from app.delegation.client import delegation_client
-from app.llm.client import get_llm_provider
 from app.protocol import AgentTaskResponse, DelegationEnvelope
+from examples.llm.client import get_llm_provider
 
 
 AGENT_ID = "doc_agent"
@@ -28,6 +28,7 @@ async def handle_task(envelope: DelegationEnvelope) -> AgentTaskResponse:
             "feishu.bitable:read",
         ],
         delegation_chain=envelope.delegation_chain,
+        auth_context=envelope.auth_context,
         payload={"report_topic": envelope.payload.get("topic", "飞书 AI 协作报告")},
     )
 

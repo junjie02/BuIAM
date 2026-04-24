@@ -2,14 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from app.config.agents import AGENTS
+from app.store.registry import list_agents
 
 
 def known_capabilities() -> set[str]:
     capabilities: set[str] = set()
-    for agent in AGENTS.values():
+    for agent in list_agents():
         capabilities.update(agent.static_capabilities)
-        capabilities.update(agent.delegatable_capabilities)
     return capabilities
 
 

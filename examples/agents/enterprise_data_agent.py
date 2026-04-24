@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.protocol import AgentTaskResponse, DelegationEnvelope
-from app.tools.enterprise import read_bitable, read_contacts, read_wiki
+from examples.tools.enterprise import read_bitable, read_contacts, read_wiki
 
 
 AGENT_ID = "enterprise_data_agent"
