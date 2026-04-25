@@ -37,6 +37,7 @@ def init_schema(db_path: Path = DB_PATH) -> None:
                 jti TEXT PRIMARY KEY,
                 sub TEXT NOT NULL,
                 agent_id TEXT NOT NULL,
+                actor_type TEXT NOT NULL DEFAULT 'agent',
                 delegated_user TEXT NOT NULL,
                 capabilities TEXT NOT NULL,
                 exp INTEGER NOT NULL,
@@ -53,6 +54,7 @@ def init_schema(db_path: Path = DB_PATH) -> None:
             )
             """
         )
+        ensure_column(connection, "tokens", "actor_type", "actor_type TEXT NOT NULL DEFAULT 'agent'")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_logs (
@@ -96,6 +98,60 @@ def init_schema(db_path: Path = DB_PATH) -> None:
                 delegated_capabilities TEXT NOT NULL,
                 missing_capabilities TEXT NOT NULL,
                 decision TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS auth_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trace_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                caller_agent_id TEXT,
+                claimed_agent_id TEXT,
+                token_jti TEXT,
+                token_sub TEXT,
+                token_agent_id TEXT,
+                delegated_user TEXT,
+                token_fingerprint TEXT,
+                token_issued_at INTEGER,
+                token_expires_at INTEGER,
+                verified_at INTEGER NOT NULL,
+                is_expired INTEGER,
+                is_revoked INTEGER,
+                is_jti_registered INTEGER,
+                signature_valid INTEGER,
+                issuer_valid INTEGER,
+                audience_valid INTEGER,
+                identity_decision TEXT NOT NULL,
+                error_code TEXT,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS intent_tree (
+                node_id TEXT PRIMARY KEY,
+                parent_node_id TEXT,
+                root_node_id TEXT NOT NULL,
+                trace_id TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                actor_id TEXT NOT NULL,
+                actor_type TEXT NOT NULL,
+                target_agent_id TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                intent TEXT NOT NULL,
+                description TEXT NOT NULL,
+                data_refs TEXT NOT NULL,
+                constraints TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                signature_alg TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                judge_decision TEXT,
+                judge_reason TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
