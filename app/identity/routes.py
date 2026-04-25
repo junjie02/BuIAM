@@ -29,22 +29,32 @@ router = APIRouter(prefix="/identity", tags=["identity"])
 
 @router.post("/tokens")
 def create_token(request: TokenIssueRequest) -> dict:
+<<<<<<< HEAD
     agent = get_agent(request.agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail={"error_code": "AGENT_NOT_REGISTERED", "message": "Agent未注册"})
     if agent.status != "active":
         raise HTTPException(status_code=403, detail={"error_code": "AGENT_INACTIVE", "message": "Agent已被禁用"})
     
+=======
+    if request.actor_type == "agent" and get_agent(request.agent_id) is None:
+        raise HTTPException(status_code=404, detail={"error_code": "AGENT_NOT_REGISTERED"})
+>>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
     return issue_token(
         agent_id=request.agent_id,
         role=request.role,
         delegated_user=request.delegated_user,
+<<<<<<< HEAD
         task_id=request.task_id,
         scope=request.scope,
         aud=request.aud,
         source_agent=request.source_agent,
         target_agent=request.target_agent,
         delegation_depth=request.delegation_depth,
+=======
+        capabilities=request.capabilities,
+        actor_type=request.actor_type,
+>>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
         ttl_seconds=request.ttl_seconds,
     )
 
