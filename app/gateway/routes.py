@@ -6,27 +6,27 @@ import time
 from uuid import uuid4
 
 from app.delegation.service import delegation_service, raise_for_denied
-  from app.gateway.local_adapter import call_local_agent
-  from app.identity.jwt_service import (
-      TokenError,
-      TokenVerificationResult,
-      inspect_token,
-      token_fingerprint,
-      verify_token,
-  )
-  from app.intent.crypto import build_signed_intent_node
-  from app.intent.generator import IntentGenerationError, generate_intent_commitment
-  from app.intent.service import IntentValidationError, validate_and_record_intent_node
-  from app.protocol import (
-      AgentTaskResponse,
-      DelegationDecision,
-      DelegationEnvelope,
-      DelegationHop,
-      RootTaskRequest,
-  )
-  from app.store.audit import record_decision
-  from app.store.auth_events import record_auth_event
-  from app.store.registry import get_agent
+from app.gateway.local_adapter import call_local_agent
+from app.identity.jwt_service import (
+    TokenError,
+    TokenVerificationResult,
+    inspect_token,
+    token_fingerprint,
+    verify_token,
+)
+from app.intent.crypto import build_signed_intent_node
+from app.intent.generator import IntentGenerationError, generate_intent_commitment
+from app.intent.service import IntentValidationError, validate_and_record_intent_node
+from app.protocol import (
+    AgentTaskResponse,
+    DelegationDecision,
+    DelegationEnvelope,
+    DelegationHop,
+    RootTaskRequest,
+)
+from app.store.audit import record_decision
+from app.store.auth_events import record_auth_event
+from app.store.registry import get_agent
 
 
 router = APIRouter()
