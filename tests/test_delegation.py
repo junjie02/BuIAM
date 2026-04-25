@@ -8,10 +8,12 @@ from fastapi.testclient import TestClient
 
 from app.delegation.capabilities import intersect_capabilities, parse_capabilities
 from app.delegation.service import DelegationService
+from app.intent.crypto import build_signed_intent_node
+from app.intent.judge import IntentJudgeResult
 from app.identity.keys import ensure_agent_keypair, private_key_path, public_key_path
 from app.identity.jwt_service import issue_token, verify_token
 from app.main import app, on_startup
-from app.protocol import AuthContext, DelegationEnvelope, DelegationHop
+from app.protocol import AuthContext, DelegationEnvelope, DelegationHop, IntentCommitment
 from app.store.registry import get_agent, upsert_agent
 from app.store.tokens import revoke_token
 
@@ -84,12 +86,31 @@ def register_demo_agents() -> None:
     for agent_id, (name, endpoint, capabilities) in demo_agents.items():
         ensure_agent_keypair(agent_id)
         upsert_agent(agent_id, name, endpoint, capabilities)
+    ensure_agent_keypair("user_123")
+
+
+async def consistent_judge(**kwargs) -> IntentJudgeResult:
+    return IntentJudgeResult(decision="Consistent", reason="test consistent")
+
+
+async def drifted_judge(**kwargs) -> IntentJudgeResult:
+    return IntentJudgeResult(decision="Drifted", reason="test drifted")
 
 
 def issue_demo_token(agent_id: str, capabilities: list[str]) -> str:
     return issue_token(
         agent_id=agent_id,
         delegated_user="user_123",
+        capabilities=capabilities,
+        ttl_seconds=3600,
+    )["access_token"]
+
+
+def issue_user_token(capabilities: list[str]) -> str:
+    return issue_token(
+        agent_id="user_123",
+        delegated_user="user_123",
+        actor_type="user",
         capabilities=capabilities,
         ttl_seconds=3600,
     )["access_token"]
@@ -420,6 +441,346 @@ def test_malformed_token_is_recorded_as_auth_event() -> None:
     auth_event = client.get(f"/audit/auth-events?trace_id={trace_id}").json()[-1]
     assert auth_event["identity_decision"] == "deny"
     assert auth_event["error_code"] == "AUTH_TOKEN_MALFORMED"
+
+
+def test_intent_node_hash_signature_and_tree_are_recorded(monkeypatch) -> None:
+    import app.intent.service as intent_service
+
+    monkeypatch.setattr(intent_service, "judge_intent", consistent_judge)
+    client = TestClient(app)
+    on_startup()
+    register_demo_agents()
+    token = issue_demo_token("doc_agent", ["web.public:read"])
+    trace_id = f"trace_intent_tree_{uuid4()}"
+    root_node = build_signed_intent_node(
+        parent_node_id=None,
+        actor_id="user_123",
+        actor_type="user",
+        target_agent_id="doc_agent",
+        task_type="ask_weather",
+        intent_commitment=IntentCommitment(
+            intent="查询今天公开天气信息",
+            description="用户想了解今天的天气情况",
+            constraints=["仅使用公开网页信息"],
+        ),
+    )
+    root_response = client.post(
+        "/delegate/call",
+        headers={"Authorization": f"Bearer {token}"},
+        json=DelegationEnvelope(
+            trace_id=trace_id,
+            request_id=f"req_intent_root_{uuid4()}",
+            caller_agent_id="doc_agent",
+            target_agent_id="external_search_agent",
+            task_type="search_public_web",
+            requested_capabilities=["web.public:read"],
+            intent_node=root_node,
+            delegation_chain=[
+                DelegationHop(
+                    from_actor="user",
+                    to_agent_id="doc_agent",
+                    task_type="ask_weather",
+                    delegated_capabilities=["web.public:read"],
+                    decision="root",
+                )
+            ],
+            payload={"query": "today weather"},
+        ).model_dump(),
+    )
+    assert root_response.status_code == 200
+
+    child_node = build_signed_intent_node(
+        parent_node_id=root_node.node_id,
+        actor_id="doc_agent",
+        actor_type="agent",
+        target_agent_id="external_search_agent",
+        task_type="search_public_web",
+        intent_commitment=IntentCommitment(
+            intent="搜索公开网页获取今天的天气信息",
+            description="调用外部检索 Agent 获取公开天气结果",
+            constraints=["仅使用公开网页信息"],
+        ),
+    )
+    child_response = client.post(
+        "/delegate/call",
+        headers={"Authorization": f"Bearer {token}"},
+        json=DelegationEnvelope(
+            trace_id=trace_id,
+            request_id=f"req_intent_child_{uuid4()}",
+            caller_agent_id="doc_agent",
+            target_agent_id="external_search_agent",
+            task_type="search_public_web",
+            requested_capabilities=["web.public:read"],
+            intent_node=child_node,
+            delegation_chain=[
+                DelegationHop(
+                    from_actor="user",
+                    to_agent_id="doc_agent",
+                    task_type="ask_weather",
+                    delegated_capabilities=["web.public:read"],
+                    decision="root",
+                )
+            ],
+            payload={"query": "today weather"},
+        ).model_dump(),
+    )
+    assert child_response.status_code == 200
+    intent_tree = client.get(f"/audit/traces/{trace_id}/intent-tree").json()["intent_tree"]
+    assert {node["node_id"] for node in intent_tree} >= {root_node.node_id, child_node.node_id}
+    trace = client.get(f"/audit/traces/{trace_id}").json()
+    assert trace["logs"][-1]["decision_detail"]["intent_judge_decision"] == "Consistent"
+
+
+def test_intent_drift_rejects_only_current_branch(monkeypatch) -> None:
+    import app.intent.service as intent_service
+
+    async def conditional_judge(**kwargs) -> IntentJudgeResult:
+        if "企业" in kwargs["child_intent"]:
+            return IntentJudgeResult(decision="Drifted", reason="test drifted")
+        return IntentJudgeResult(decision="Consistent", reason="test consistent")
+
+    monkeypatch.setattr(intent_service, "judge_intent", conditional_judge)
+    client = TestClient(app)
+    on_startup()
+    register_demo_agents()
+    doc_token = issue_demo_token("doc_agent", ["web.public:read"])
+    external_token = issue_demo_token("external_search_agent", ["web.public:read"])
+    trace_id = f"trace_intent_drift_{uuid4()}"
+    root_node = build_signed_intent_node(
+        parent_node_id=None,
+        actor_id="user_123",
+        actor_type="user",
+        target_agent_id="doc_agent",
+        task_type="ask_weather",
+        intent_commitment=IntentCommitment(intent="查询今天公开天气信息"),
+    )
+    assert client.post(
+        "/delegate/call",
+        headers={"Authorization": f"Bearer {doc_token}"},
+        json=DelegationEnvelope(
+            trace_id=trace_id,
+            request_id=f"req_intent_root_{uuid4()}",
+            caller_agent_id="doc_agent",
+            target_agent_id="external_search_agent",
+            task_type="search_public_web",
+            requested_capabilities=["web.public:read"],
+            intent_node=root_node,
+            payload={"query": "today weather"},
+        ).model_dump(),
+    ).status_code == 200
+
+    drift_node = build_signed_intent_node(
+        parent_node_id=root_node.node_id,
+        actor_id="external_search_agent",
+        actor_type="agent",
+        target_agent_id="enterprise_data_agent",
+        task_type="read_enterprise_data",
+        intent_commitment=IntentCommitment(intent="读取企业通讯录和多维表格数据"),
+    )
+    response = client.post(
+        "/delegate/call",
+        headers={"Authorization": f"Bearer {external_token}"},
+        json=DelegationEnvelope(
+            trace_id=trace_id,
+            request_id=f"req_intent_drift_{uuid4()}",
+            caller_agent_id="external_search_agent",
+            target_agent_id="enterprise_data_agent",
+            task_type="read_enterprise_data",
+            requested_capabilities=["feishu.contact:read"],
+            intent_node=drift_node,
+            delegation_chain=[
+                DelegationHop(
+                    from_actor="user",
+                    to_agent_id="doc_agent",
+                    task_type="ask_weather",
+                    delegated_capabilities=["web.public:read"],
+                    decision="root",
+                ),
+                DelegationHop(
+                    from_actor="doc_agent",
+                    to_agent_id="external_search_agent",
+                    task_type="search_public_web",
+                    delegated_capabilities=["web.public:read"],
+                    decision="allow",
+                ),
+            ],
+            payload={},
+        ).model_dump(),
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error_code"] == "INTENT_DRIFTED"
+    intent_tree = client.get(f"/audit/traces/{trace_id}/intent-tree").json()["intent_tree"]
+    assert any(node["node_id"] == drift_node.node_id and node["judge_decision"] == "Drifted" for node in intent_tree)
+
+
+def test_tampered_intent_node_is_rejected(monkeypatch) -> None:
+    import app.intent.service as intent_service
+
+    monkeypatch.setattr(intent_service, "judge_intent", consistent_judge)
+    client = TestClient(app)
+    on_startup()
+    register_demo_agents()
+    token = issue_demo_token("doc_agent", ["web.public:read"])
+    node = build_signed_intent_node(
+        parent_node_id=None,
+        actor_id="user_123",
+        actor_type="user",
+        target_agent_id="doc_agent",
+        task_type="ask_weather",
+        intent_commitment=IntentCommitment(intent="查询今天公开天气信息"),
+    )
+    tampered = node.model_copy(
+        update={"intent_commitment": IntentCommitment(intent="读取企业通讯录")}
+    )
+    response = client.post(
+        "/delegate/call",
+        headers={"Authorization": f"Bearer {token}"},
+        json=DelegationEnvelope(
+            trace_id=f"trace_intent_tamper_{uuid4()}",
+            request_id=f"req_intent_tamper_{uuid4()}",
+            caller_agent_id="doc_agent",
+            target_agent_id="external_search_agent",
+            task_type="search_public_web",
+            requested_capabilities=["web.public:read"],
+            intent_node=tampered,
+            payload={"query": "today weather"},
+        ).model_dump(),
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"]["error_code"] == "INTENT_CHAIN_INVALID"
+
+
+def test_real_llm_root_task_and_normal_delegation_records_intents() -> None:
+    client = TestClient(app)
+    on_startup()
+    register_demo_agents()
+    trace_id = f"trace_real_llm_normal_{uuid4()}"
+    user_token = issue_user_token([
+        "report:write",
+        "feishu.contact:read",
+        "feishu.wiki:read",
+        "feishu.bitable:read",
+        "web.public:read",
+    ])
+    root_response = client.post(
+        "/delegate/root-task",
+        headers={"Authorization": f"Bearer {user_token}"},
+        json={
+            "trace_id": trace_id,
+            "target_agent_id": "doc_agent",
+            "task_type": "generate_report",
+            "user_task": "请基于企业通讯录、知识库和多维表格生成一份飞书协作报告",
+            "requested_capabilities": [
+                "report:write",
+                "feishu.contact:read",
+                "feishu.wiki:read",
+                "feishu.bitable:read",
+                "web.public:read",
+            ],
+            "payload": {"topic": "飞书 AI 协作季度报告"},
+        },
+    )
+    assert root_response.status_code == 200
+    root_trace = client.get(f"/audit/traces/{trace_id}").json()
+    root_node_id = root_trace["intent_tree"][-1]["node_id"]
+    doc_token = issue_demo_token(
+        "doc_agent",
+        ["report:write", "feishu.contact:read", "feishu.wiki:read", "feishu.bitable:read", "web.public:read"],
+    )
+    child_response = client.post(
+        "/delegate/call",
+        headers={"Authorization": f"Bearer {doc_token}"},
+        json=DelegationEnvelope(
+            trace_id=trace_id,
+            request_id=f"req_real_llm_normal_{uuid4()}",
+            caller_agent_id="doc_agent",
+            target_agent_id="enterprise_data_agent",
+            task_type="read_enterprise_data",
+            requested_capabilities=["feishu.contact:read", "feishu.wiki:read", "feishu.bitable:read"],
+            delegation_chain=[DelegationHop.model_validate(root_trace["chain"][0])],
+            payload={
+                "user_task": "请基于企业通讯录、知识库和多维表格生成一份飞书协作报告",
+                "parent_intent_node_id": root_node_id,
+            },
+        ).model_dump(),
+    )
+    assert child_response.status_code == 200
+    trace = client.get(f"/audit/traces/{trace_id}").json()
+    assert len(trace["auth_events"]) >= 2
+    assert len(trace["intent_tree"]) >= 2
+    assert trace["chain"][0]["from_actor"] == "user_123"
+    latest_detail = trace["logs"][-1]["decision_detail"]
+    assert latest_detail["root_intent"]
+    assert latest_detail["parent_intent"]
+    assert latest_detail["child_intent"]
+    assert latest_detail["intent_generation_model"]
+    assert latest_detail["intent_judge_decision"] in {"Consistent", "Drifted"}
+
+
+def test_real_llm_root_task_and_unauthorized_branch_records_intents() -> None:
+    client = TestClient(app)
+    on_startup()
+    register_demo_agents()
+    trace_id = f"trace_real_llm_deny_{uuid4()}"
+    user_token = issue_user_token(["report:write", "web.public:read"])
+    root_response = client.post(
+        "/delegate/root-task",
+        headers={"Authorization": f"Bearer {user_token}"},
+        json={
+            "trace_id": trace_id,
+            "target_agent_id": "doc_agent",
+            "task_type": "ask_weather",
+            "user_task": "请检索今天的公开天气信息",
+            "requested_capabilities": ["report:write", "web.public:read"],
+            "payload": {"query": "今天的天气怎么样"},
+        },
+    )
+    assert root_response.status_code == 200
+    trace = client.get(f"/audit/traces/{trace_id}").json()
+    doc_token = issue_demo_token("doc_agent", ["report:write", "web.public:read"])
+    external_response = client.post(
+        "/delegate/call",
+        headers={"Authorization": f"Bearer {doc_token}"},
+        json=DelegationEnvelope(
+            trace_id=trace_id,
+            request_id=f"req_real_llm_external_{uuid4()}",
+            caller_agent_id="doc_agent",
+            target_agent_id="external_search_agent",
+            task_type="search_public_web",
+            requested_capabilities=["web.public:read"],
+            delegation_chain=[DelegationHop.model_validate(trace["chain"][0])],
+            payload={"user_task": "请检索今天的公开天气信息", "parent_intent_node_id": trace["intent_tree"][-1]["node_id"]},
+        ).model_dump(),
+    )
+    assert external_response.status_code == 200
+    trace = client.get(f"/audit/traces/{trace_id}").json()
+    external_token = issue_demo_token("external_search_agent", ["web.public:read"])
+    denied_response = client.post(
+        "/delegate/call",
+        headers={"Authorization": f"Bearer {external_token}"},
+        json=DelegationEnvelope(
+            trace_id=trace_id,
+            request_id=f"req_real_llm_deny_{uuid4()}",
+            caller_agent_id="external_search_agent",
+            target_agent_id="enterprise_data_agent",
+            task_type="read_enterprise_data",
+            requested_capabilities=["feishu.contact:read", "feishu.wiki:read", "feishu.bitable:read"],
+            delegation_chain=[
+                DelegationHop.model_validate(trace["chain"][0]),
+                DelegationHop.model_validate(trace["chain"][-1]),
+            ],
+            payload={"user_task": "请检索今天的公开天气信息", "parent_intent_node_id": trace["intent_tree"][-1]["node_id"]},
+        ).model_dump(),
+    )
+    assert denied_response.status_code == 403
+    trace = client.get(f"/audit/traces/{trace_id}").json()
+    assert len(trace["auth_events"]) >= 3
+    latest_detail = trace["logs"][-1]["decision_detail"]
+    assert latest_detail["root_intent"]
+    assert latest_detail["parent_intent"]
+    assert latest_detail["child_intent"]
+    assert len(trace["intent_tree"]) >= (3 if latest_detail["intent_judge_decision"] == "Drifted" else 2)
+    assert latest_detail["intent_judge_decision"] or latest_detail["missing_capabilities"]
 
 
 def test_app_core_does_not_import_examples_except_local_adapter() -> None:

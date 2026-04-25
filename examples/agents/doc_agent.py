@@ -9,6 +9,31 @@ AGENT_ID = "doc_agent"
 
 
 async def handle_task(envelope: DelegationEnvelope) -> AgentTaskResponse:
+    if envelope.task_type == "ask_weather":
+        search_envelope = delegation_client.build_envelope(
+            trace_id=envelope.trace_id,
+            caller_agent_id=AGENT_ID,
+            target_agent_id="external_search_agent",
+            task_type="search_public_web",
+            requested_capabilities=["web.public:read"],
+            delegation_chain=envelope.delegation_chain,
+            auth_context=envelope.auth_context,
+            payload={
+                "query": envelope.payload.get("query", "今天的天气怎么样"),
+                "user_task": envelope.payload.get("user_task", "请检索今天的公开天气信息"),
+                "parent_intent_node_id": envelope.intent_node.node_id if envelope.intent_node else None,
+            },
+        )
+        return AgentTaskResponse(
+            agent_id=AGENT_ID,
+            trace_id=envelope.trace_id,
+            task_type=envelope.task_type,
+            result={
+                "message": "doc_agent accepted weather task and prepared delegation to external_search_agent",
+                "delegation_envelope": search_envelope.model_dump(),
+            },
+        )
+
     if envelope.task_type != "generate_report":
         return AgentTaskResponse(
             agent_id=AGENT_ID,

@@ -23,6 +23,25 @@ class DelegationHop(BaseModel):
     decision: Literal["allow", "deny", "root"] = "allow"
 
 
+class IntentCommitment(BaseModel):
+    intent: str
+    description: str = ""
+    data_refs: list[str] = Field(default_factory=list)
+    constraints: list[str] = Field(default_factory=list)
+
+
+class IntentNode(BaseModel):
+    node_id: str
+    parent_node_id: str | None = None
+    actor_id: str
+    actor_type: Literal["user", "agent"]
+    target_agent_id: str
+    task_type: str
+    intent_commitment: IntentCommitment
+    signature: str
+    signature_alg: str = "BUIAM-RS256"
+
+
 class DecisionDetail(BaseModel):
     requested_capabilities: list[str] = Field(default_factory=list)
     caller_token_capabilities: list[str] = Field(default_factory=list)
@@ -34,6 +53,14 @@ class DecisionDetail(BaseModel):
     auth_event_recorded: bool = False
     token_jti: str | None = None
     token_agent_id: str | None = None
+    intent_node_id: str | None = None
+    parent_intent_node_id: str | None = None
+    root_intent: str | None = None
+    parent_intent: str | None = None
+    child_intent: str | None = None
+    intent_generation_model: str | None = None
+    intent_judge_decision: str | None = None
+    intent_judge_reason: str | None = None
     decision: Literal["allow", "deny"]
     reason: str
 
@@ -44,6 +71,7 @@ class AuthContext(BaseModel):
     exp: int
     delegated_user: str
     agent_id: str
+    actor_type: Literal["user", "agent"] = "agent"
     capabilities: list[str] = Field(default_factory=list)
     sig: str | None = None
 
@@ -57,6 +85,7 @@ class DelegationEnvelope(BaseModel):
     task_type: str
     requested_capabilities: list[str] = Field(default_factory=list)
     delegation_chain: list[DelegationHop] = Field(default_factory=list)
+    intent_node: IntentNode | None = None
     auth_context: AuthContext | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -83,6 +112,14 @@ class DelegationDecision(BaseModel):
     target_agent_capabilities: list[str] = Field(default_factory=list)
     user_capabilities: list[str] = Field(default_factory=list)
     missing_by: dict[str, list[str]] = Field(default_factory=dict)
+    intent_node_id: str | None = None
+    parent_intent_node_id: str | None = None
+    root_intent: str | None = None
+    parent_intent: str | None = None
+    child_intent: str | None = None
+    intent_generation_model: str | None = None
+    intent_judge_decision: str | None = None
+    intent_judge_reason: str | None = None
 
     def to_detail(self) -> DecisionDetail:
         return DecisionDetail(
@@ -94,6 +131,14 @@ class DelegationDecision(BaseModel):
             missing_capabilities=self.missing_capabilities,
             missing_by=self.missing_by,
             auth_event_recorded=False,
+            intent_node_id=self.intent_node_id,
+            parent_intent_node_id=self.parent_intent_node_id,
+            root_intent=self.root_intent,
+            parent_intent=self.parent_intent,
+            child_intent=self.child_intent,
+            intent_generation_model=self.intent_generation_model,
+            intent_judge_decision=self.intent_judge_decision,
+            intent_judge_reason=self.intent_judge_reason,
             decision=self.decision,
             reason=self.reason,
         )
@@ -149,5 +194,16 @@ class AgentRegistrationRequest(BaseModel):
 class TokenIssueRequest(BaseModel):
     agent_id: str
     delegated_user: str = "user_123"
+    actor_type: Literal["user", "agent"] = "agent"
     capabilities: list[str] = Field(default_factory=list)
     ttl_seconds: int = 3600
+
+
+class RootTaskRequest(BaseModel):
+    trace_id: str | None = None
+    request_id: str | None = None
+    target_agent_id: str
+    task_type: str
+    user_task: str
+    requested_capabilities: list[str] = Field(default_factory=list)
+    payload: dict[str, Any] = Field(default_factory=dict)

@@ -20,18 +20,14 @@ def record_decision(
     db_path: Path = DB_PATH,
 ) -> None:
     init_db(db_path)
-    append_chain_hops_if_empty(
-        trace_id=envelope.trace_id,
-        request_id=envelope.request_id,
-        hops=envelope.delegation_chain,
-        db_path=db_path,
-    )
-    append_chain_hop(
-        trace_id=envelope.trace_id,
-        request_id=envelope.request_id,
-        hop=delegation_decision_hop(envelope, decision),
-        db_path=db_path,
-    )
+    append_chain_hops_if_empty(trace_id=envelope.trace_id, request_id=envelope.request_id, hops=envelope.delegation_chain, db_path=db_path)
+    if not (decision.decision == "allow" and envelope.delegation_chain and envelope.delegation_chain[-1].decision == "root" and envelope.caller_agent_id == envelope.delegation_chain[-1].from_actor):
+        append_chain_hop(
+            trace_id=envelope.trace_id,
+            request_id=envelope.request_id,
+            hop=delegation_decision_hop(envelope, decision),
+            db_path=db_path,
+        )
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             """

@@ -29,13 +29,14 @@ class OpenAILLMProvider:
     def __init__(self) -> None:
         self.api_key = os.getenv("OPENAI_API_KEY")
         self.model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+        self.base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
 
     async def complete(self, system: str, user: str) -> str:
         if not self.api_key:
             return await MockLLMProvider().complete(system, user)
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                "https://api.openai.com/v1/chat/completions",
+                f"{self.base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json={
                     "model": self.model,
@@ -53,13 +54,14 @@ class AnthropicLLMProvider:
     def __init__(self) -> None:
         self.api_key = os.getenv("ANTHROPIC_API_KEY")
         self.model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
+        self.base_url = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com/v1").rstrip("/")
 
     async def complete(self, system: str, user: str) -> str:
         if not self.api_key:
             return await MockLLMProvider().complete(system, user)
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                "https://api.anthropic.com/v1/messages",
+                f"{self.base_url}/messages",
                 headers={
                     "x-api-key": self.api_key,
                     "anthropic-version": "2023-06-01",

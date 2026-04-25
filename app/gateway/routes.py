@@ -8,9 +8,14 @@ from uuid import uuid4
 from app.delegation.service import delegation_service, raise_for_denied
 from app.gateway.local_adapter import call_local_agent
 from app.identity.jwt_service import TokenVerificationResult, inspect_token, token_fingerprint
-from app.protocol import AgentTaskResponse, DelegationEnvelope
+from app.intent.crypto import build_signed_intent_node
+from app.intent.generator import IntentGenerationError, generate_intent_commitment
+from app.intent.service import IntentValidationError, validate_and_record_intent_node
+from app.protocol import AgentTaskResponse, DelegationEnvelope, DelegationHop, RootTaskRequest
+from app.protocol import DelegationDecision
 from app.store.registry import get_agent
 from app.store.auth_events import record_auth_event
+from app.store.audit import record_decision
 
 
 router = APIRouter()
@@ -86,11 +91,11 @@ def record_token_result(envelope: DelegationEnvelope, result: TokenVerificationR
     )
 
 
-@router.post("/delegate/call")
-async def delegate_call(
+def verify_bearer_for_envelope(
+    *,
     envelope: DelegationEnvelope,
-    authorization: str | None = Header(default=None),
-) -> AgentTaskResponse:
+    authorization: str | None,
+) -> TokenVerificationResult:
     try:
         token = bearer_token(authorization)
     except HTTPException as error:
@@ -110,7 +115,15 @@ async def delegate_call(
             status_code=401,
             detail={"error_code": token_result.error_code, "message": token_result.message},
         )
+    return token_result
 
+
+@router.post("/delegate/call")
+async def delegate_call(
+    envelope: DelegationEnvelope,
+    authorization: str | None = Header(default=None),
+) -> AgentTaskResponse:
+    token_result = verify_bearer_for_envelope(envelope=envelope, authorization=authorization)
     auth_context = token_result.auth_context
 
     trusted_envelope = envelope.model_copy(
@@ -119,6 +132,28 @@ async def delegate_call(
             "auth_context": auth_context,
         }
     )
+    generated_intent_model = None
+    if trusted_envelope.intent_node is None and trusted_envelope.payload.get("user_task"):
+        trusted_envelope, generated_intent_model = await attach_generated_intent_node(
+            envelope=trusted_envelope,
+            auth_context=auth_context,
+            user_task=str(trusted_envelope.payload.get("user_task", trusted_envelope.task_type)),
+        )
+    intent_result = None
+    if trusted_envelope.intent_node is not None:
+        try:
+            intent_result = await validate_and_record_intent_node(
+                node=trusted_envelope.intent_node,
+                trace_id=trusted_envelope.trace_id,
+                request_id=trusted_envelope.request_id,
+                auth_context=auth_context,
+        )
+        except IntentValidationError as error:
+            record_decision(trusted_envelope, intent_error_decision(error, trusted_envelope, generated_intent_model))
+            raise HTTPException(
+                status_code=403,
+                detail={"error_code": error.error_code, "message": error.message},
+            ) from error
     target = get_agent(trusted_envelope.target_agent_id)
     if target is None:
         raise HTTPException(
@@ -126,13 +161,114 @@ async def delegate_call(
             detail={"error_code": "AGENT_NOT_REGISTERED", "agent_id": trusted_envelope.target_agent_id},
         )
 
-    decision = delegation_service.authorize_and_record(trusted_envelope)
+    decision = delegation_service.authorize(trusted_envelope)
+    if intent_result is not None:
+        decision.intent_node_id = intent_result.node.node_id
+        decision.parent_intent_node_id = intent_result.node.parent_node_id
+        decision.root_intent = intent_result.root_intent
+        decision.parent_intent = intent_result.parent_intent
+        decision.child_intent = intent_result.child_intent
+        decision.intent_generation_model = generated_intent_model
+        decision.intent_judge_decision = intent_result.judge_decision
+        decision.intent_judge_reason = intent_result.judge_reason
+    record_decision(trusted_envelope, decision)
     raise_for_denied(decision)
     authorized_envelope = delegation_service.append_hop(
         trusted_envelope,
         decision.effective_capabilities,
     )
     return await forward_to_agent(target.endpoint, authorized_envelope)
+
+
+@router.post("/delegate/root-task")
+async def root_task(
+    request: RootTaskRequest,
+    authorization: str | None = Header(default=None),
+) -> AgentTaskResponse:
+    trace_id = request.trace_id or str(uuid4())
+    request_id = request.request_id or str(uuid4())
+    provisional_envelope = DelegationEnvelope(
+        trace_id=trace_id,
+        request_id=request_id,
+        caller_agent_id="user",
+        target_agent_id=request.target_agent_id,
+        task_type=request.task_type,
+        requested_capabilities=request.requested_capabilities,
+        payload={**request.payload, "user_task": request.user_task},
+    )
+    token_result = verify_bearer_for_envelope(envelope=provisional_envelope, authorization=authorization)
+    auth_context = token_result.auth_context
+    if auth_context.actor_type != "user":
+        raise HTTPException(status_code=403, detail={"error_code": "AUTH_ACTOR_TYPE_INVALID", "message": "root-task requires user token"})
+
+    try:
+        generated = await generate_intent_commitment(
+            user_task=request.user_task,
+            actor_id=auth_context.delegated_user,
+            actor_type="user",
+            target_agent_id=request.target_agent_id,
+            task_type=request.task_type,
+            payload=request.payload,
+        )
+    except IntentGenerationError as error:
+        record_decision(provisional_envelope, intent_generation_error_decision(str(error), provisional_envelope))
+        raise HTTPException(status_code=403, detail={"error_code": "INTENT_GENERATION_FAILED", "message": str(error)}) from error
+    root_node = build_signed_intent_node(
+        parent_node_id=None,
+        actor_id=auth_context.delegated_user,
+        actor_type="user",
+        target_agent_id=request.target_agent_id,
+        task_type=request.task_type,
+        intent_commitment=generated.commitment,
+    )
+    root_hop = DelegationHop(
+        from_actor=auth_context.delegated_user,
+        to_agent_id=request.target_agent_id,
+        task_type=request.task_type,
+        delegated_capabilities=request.requested_capabilities,
+        decision="root",
+    )
+    trusted_envelope = provisional_envelope.model_copy(
+        update={
+            "caller_agent_id": auth_context.delegated_user,
+            "auth_context": auth_context,
+            "delegation_chain": [root_hop],
+            "intent_node": root_node,
+        }
+    )
+    try:
+        intent_result = await validate_and_record_intent_node(
+            node=root_node,
+            trace_id=trace_id,
+            request_id=request_id,
+            auth_context=auth_context,
+        )
+    except IntentValidationError as error:
+        record_decision(trusted_envelope, intent_error_decision(error, trusted_envelope))
+        raise HTTPException(status_code=403, detail={"error_code": error.error_code, "message": error.message}) from error
+
+    target = get_agent(request.target_agent_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail={"error_code": "AGENT_NOT_REGISTERED", "agent_id": request.target_agent_id})
+
+    decision = DelegationDecision(
+        decision="allow",
+        reason="root user task accepted",
+        effective_capabilities=request.requested_capabilities,
+        requested_capabilities=request.requested_capabilities,
+        caller_token_capabilities=auth_context.capabilities,
+        user_capabilities=auth_context.capabilities,
+        intent_node_id=root_node.node_id,
+        parent_intent_node_id=None,
+        root_intent=intent_result.root_intent,
+        parent_intent=intent_result.parent_intent,
+        child_intent=intent_result.child_intent,
+        intent_generation_model=generated.model,
+        intent_judge_decision=intent_result.judge_decision,
+        intent_judge_reason=intent_result.judge_reason,
+    )
+    record_decision(trusted_envelope, decision)
+    return await forward_to_agent(target.endpoint, trusted_envelope)
 
 
 async def forward_to_agent(endpoint: str, envelope: DelegationEnvelope) -> AgentTaskResponse:
@@ -148,3 +284,74 @@ async def forward_to_agent(endpoint: str, envelope: DelegationEnvelope) -> Agent
             status_code=502,
             detail={"error_code": "TARGET_AGENT_UNREACHABLE", "message": str(error)},
         ) from error
+
+
+def intent_error_decision(
+    error: IntentValidationError,
+    envelope: DelegationEnvelope,
+    generation_model: str | None = None,
+) -> DelegationDecision:
+    requested = sorted(envelope.requested_capabilities)
+    return DelegationDecision(
+        decision="deny",
+        reason=f"{error.error_code}: {error.message}",
+        effective_capabilities=[],
+        missing_capabilities=requested,
+        requested_capabilities=requested,
+        intent_node_id=error.node.node_id if error.node is not None else None,
+        parent_intent_node_id=error.node.parent_node_id if error.node is not None else None,
+        root_intent=error.root_intent,
+        parent_intent=error.parent_intent,
+        child_intent=error.child_intent or (envelope.intent_node.intent_commitment.intent if envelope.intent_node else None),
+        intent_generation_model=generation_model,
+        intent_judge_decision=error.judge_decision,
+        intent_judge_reason=error.judge_reason or error.message,
+    )
+
+
+def intent_generation_error_decision(message: str, envelope: DelegationEnvelope) -> DelegationDecision:
+    requested = sorted(envelope.requested_capabilities)
+    return DelegationDecision(
+        decision="deny",
+        reason=f"INTENT_GENERATION_FAILED: {message}",
+        effective_capabilities=[],
+        missing_capabilities=requested,
+        requested_capabilities=requested,
+        child_intent=None,
+        intent_judge_decision="GenerationFailed",
+        intent_judge_reason=message,
+    )
+
+
+async def attach_generated_intent_node(
+    *,
+    envelope: DelegationEnvelope,
+    auth_context,
+    user_task: str,
+) -> tuple[DelegationEnvelope, str]:
+    parent_node_id = None
+    if envelope.delegation_chain and envelope.payload.get("parent_intent_node_id"):
+        parent_node_id = str(envelope.payload["parent_intent_node_id"])
+    elif envelope.payload.get("parent_intent_node_id"):
+        parent_node_id = str(envelope.payload["parent_intent_node_id"])
+    try:
+        generated = await generate_intent_commitment(
+            user_task=user_task,
+            actor_id=auth_context.agent_id,
+            actor_type="agent",
+            target_agent_id=envelope.target_agent_id,
+            task_type=envelope.task_type,
+            payload=envelope.payload,
+        )
+    except IntentGenerationError as error:
+        record_decision(envelope, intent_generation_error_decision(str(error), envelope))
+        raise HTTPException(status_code=403, detail={"error_code": "INTENT_GENERATION_FAILED", "message": str(error)}) from error
+    node = build_signed_intent_node(
+        parent_node_id=parent_node_id,
+        actor_id=auth_context.agent_id,
+        actor_type="agent",
+        target_agent_id=envelope.target_agent_id,
+        task_type=envelope.task_type,
+        intent_commitment=generated.commitment,
+    )
+    return envelope.model_copy(update={"intent_node": node}), generated.model

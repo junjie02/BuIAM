@@ -32,6 +32,7 @@ class TokenVerificationResult:
     token_jti: str | None
     token_sub: str | None
     token_agent_id: str | None
+    actor_type: str | None
     delegated_user: str | None
     token_issued_at: int | None
     token_expires_at: int | None
@@ -87,6 +88,7 @@ def issue_token(
     agent_id: str,
     delegated_user: str,
     capabilities: list[str],
+    actor_type: str = "agent",
     ttl_seconds: int = 3600,
 ) -> dict:
     now = int(time.time())
@@ -97,6 +99,7 @@ def issue_token(
         "jti": jti,
         "sub": agent_id,
         "agent_id": agent_id,
+        "actor_type": actor_type,
         "delegated_user": delegated_user,
         "capabilities": capabilities,
         "iat": now,
@@ -110,6 +113,7 @@ def issue_token(
         jti=jti,
         sub=agent_id,
         agent_id=agent_id,
+        actor_type=actor_type,
         delegated_user=delegated_user,
         capabilities=capabilities,
         exp=exp,
@@ -232,6 +236,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
         exp=stored.exp,
         delegated_user=stored.delegated_user,
         agent_id=stored.agent_id,
+        actor_type=stored.actor_type,
         capabilities=stored.capabilities,
     )
     return TokenVerificationResult(
@@ -242,6 +247,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
         token_jti=stored.jti,
         token_sub=stored.sub,
         token_agent_id=stored.agent_id,
+        actor_type=stored.actor_type,
         delegated_user=stored.delegated_user,
         token_issued_at=int(claims.get("iat")) if claims.get("iat") is not None else None,
         token_expires_at=stored.exp,
@@ -277,6 +283,7 @@ def failed_token_result(
         token_jti=str(claims.get("jti")) if claims.get("jti") is not None else None,
         token_sub=str(claims.get("sub")) if claims.get("sub") is not None else None,
         token_agent_id=str(claims.get("agent_id")) if claims.get("agent_id") is not None else None,
+        actor_type=str(claims.get("actor_type")) if claims.get("actor_type") is not None else None,
         delegated_user=str(claims.get("delegated_user")) if claims.get("delegated_user") is not None else None,
         token_issued_at=int(claims.get("iat")) if claims.get("iat") is not None else None,
         token_expires_at=int(claims.get("exp")) if claims.get("exp") is not None else None,

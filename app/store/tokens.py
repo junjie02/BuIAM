@@ -13,6 +13,7 @@ class StoredToken:
     jti: str
     sub: str
     agent_id: str
+    actor_type: str
     delegated_user: str
     capabilities: list[str]
     exp: int
@@ -24,6 +25,7 @@ def store_token(
     jti: str,
     sub: str,
     agent_id: str,
+    actor_type: str,
     delegated_user: str,
     capabilities: list[str],
     exp: int,
@@ -34,10 +36,10 @@ def store_token(
         connection.execute(
             """
             INSERT OR REPLACE INTO tokens
-            (jti, sub, agent_id, delegated_user, capabilities, exp, revoked)
-            VALUES (?, ?, ?, ?, ?, ?, COALESCE((SELECT revoked FROM tokens WHERE jti = ?), 0))
+            (jti, sub, agent_id, actor_type, delegated_user, capabilities, exp, revoked)
+            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT revoked FROM tokens WHERE jti = ?), 0))
             """,
-            (jti, sub, agent_id, delegated_user, json.dumps(capabilities), exp, jti),
+            (jti, sub, agent_id, actor_type, delegated_user, json.dumps(capabilities), exp, jti),
         )
 
 
@@ -52,6 +54,7 @@ def get_token(jti: str, db_path: Path = DB_PATH) -> StoredToken | None:
         jti=row["jti"],
         sub=row["sub"],
         agent_id=row["agent_id"],
+        actor_type=row["actor_type"],
         delegated_user=row["delegated_user"],
         capabilities=json.loads(row["capabilities"]),
         exp=int(row["exp"]),
