@@ -39,8 +39,14 @@ class AuthContext(BaseModel):
     jti: str
     sub: str
     exp: int
-    delegated_user: str
     agent_id: str
+    role: str
+    delegated_user: str | None = None
+    task_id: str | None = None
+    scope: list[str] = Field(default_factory=list)
+    source_agent: str | None = None
+    target_agent: str | None = None
+    delegation_depth: int = 0
     capabilities: list[str] = Field(default_factory=list)
     sig: str | None = None
 
