@@ -1,14 +1,19 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import time
 from dataclasses import dataclass
 from uuid import uuid4
 
-from app.identity.keys import load_private_key, load_public_key
+from app.delegation.credential_crypto import (
+    auth_context_from_credential,
+    build_delegation_credential,
+    verify_credential_integrity,
+)
+from app.identity.crypto import b64url_decode, b64url_encode, rsa_sign, rsa_verify
 from app.protocol import AuthContext
+from app.store.delegation_credentials import get_credential, upsert_credential
 from app.store.tokens import get_token, mark_jti_seen, store_token
 
 
@@ -50,12 +55,11 @@ class TokenVerificationResult:
 
 
 def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+    return b64url_encode(data)
 
 
 def _b64url_decode(data: str) -> bytes:
-    padding = "=" * (-len(data) % 4)
-    return base64.urlsafe_b64decode(data + padding)
+    return b64url_decode(data)
 
 
 def _json_b64(payload: dict) -> str:
@@ -66,21 +70,6 @@ def token_fingerprint(token: str | None) -> str | None:
     if not token:
         return None
     return hashlib.sha256(token.encode()).hexdigest()
-
-
-def _rsa_sign(signing_input: str, private_key: dict) -> str:
-    digest = hashlib.sha256(signing_input.encode()).digest()
-    digest_int = int.from_bytes(digest, "big")
-    signature_int = pow(digest_int, int(private_key["d"]), int(private_key["n"]))
-    length = (int(private_key["n"]).bit_length() + 7) // 8
-    return _b64url(signature_int.to_bytes(length, "big"))
-
-
-def _rsa_verify(signing_input: str, signature: str, public_key: dict) -> bool:
-    digest_int = int.from_bytes(hashlib.sha256(signing_input.encode()).digest(), "big")
-    signature_int = int.from_bytes(_b64url_decode(signature), "big")
-    verified = pow(signature_int, int(public_key["e"]), int(public_key["n"]))
-    return verified == digest_int
 
 
 def issue_token(
@@ -111,7 +100,20 @@ def issue_token(
         "aud": AUDIENCE,
     }
     signing_input = f"{_json_b64(header)}.{_json_b64(claims)}"
-    token = f"{signing_input}.{_rsa_sign(signing_input, load_private_key(agent_id))}"
+    token = f"{signing_input}.{rsa_sign(signing_input, agent_id)}"
+    root_credential = build_delegation_credential(
+        issuer_id=agent_id,
+        subject_id=agent_id,
+        delegated_user=delegated_user,
+        capabilities=capabilities,
+        user_capabilities=stored_user_capabilities,
+        exp=exp,
+        parent=None,
+        trace_id=None,
+        request_id=jti,
+        iat=now,
+    )
+    upsert_credential(root_credential)
     store_token(
         jti=jti,
         sub=agent_id,
@@ -121,8 +123,15 @@ def issue_token(
         capabilities=capabilities,
         user_capabilities=stored_user_capabilities,
         exp=exp,
+        credential_id=root_credential.credential_id,
     )
-    return {"access_token": token, "token_type": "bearer", "jti": jti, "exp": exp}
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "jti": jti,
+        "exp": exp,
+        "credential_id": root_credential.credential_id,
+    }
 
 
 def verify_token(token: str) -> AuthContext:
@@ -151,7 +160,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
                 message="invalid token header",
             )
         signing_input = f"{header_part}.{claims_part}"
-        if not _rsa_verify(signing_input, signature, load_public_key(agent_id)):
+        if not rsa_verify(signing_input, signature, agent_id):
             return failed_token_result(
                 token_fingerprint=fingerprint,
                 verified_at=verified_at,
@@ -234,16 +243,64 @@ def inspect_token(token: str) -> TokenVerificationResult:
             is_revoked=True,
         )
     mark_jti_seen(stored.jti)
-    auth_context = AuthContext(
-        jti=stored.jti,
-        sub=stored.sub,
-        exp=stored.exp,
-        delegated_user=stored.delegated_user,
-        agent_id=stored.agent_id,
-        actor_type=stored.actor_type,
-        capabilities=stored.capabilities,
-        user_capabilities=stored.user_capabilities,
-    )
+    root_credential = get_credential(stored.credential_id) if stored.credential_id else None
+    if stored.credential_id and root_credential is None:
+        return failed_token_result(
+            token_fingerprint=fingerprint,
+            verified_at=verified_at,
+            claims=claims,
+            error_code="AUTH_CREDENTIAL_INVALID",
+            message="token credential is not registered",
+            signature_valid=True,
+            issuer_valid=True,
+            audience_valid=True,
+            is_expired=False,
+            is_jti_registered=True,
+        )
+    if root_credential is not None:
+        if not verify_credential_integrity(root_credential):
+            return failed_token_result(
+                token_fingerprint=fingerprint,
+                verified_at=verified_at,
+                claims=claims,
+                error_code="AUTH_CREDENTIAL_INVALID",
+                message="token credential integrity verification failed",
+                signature_valid=True,
+                issuer_valid=True,
+                audience_valid=True,
+                is_expired=False,
+                is_jti_registered=True,
+            )
+        if root_credential.revoked:
+            return failed_token_result(
+                token_fingerprint=fingerprint,
+                verified_at=verified_at,
+                claims=claims,
+                error_code="AUTH_CREDENTIAL_REVOKED",
+                message="token credential has been revoked",
+                signature_valid=True,
+                issuer_valid=True,
+                audience_valid=True,
+                is_expired=False,
+                is_jti_registered=True,
+                is_revoked=True,
+            )
+        auth_context = auth_context_from_credential(
+            root_credential,
+            jti=stored.jti,
+            actor_type=stored.actor_type,
+        )
+    else:
+        auth_context = AuthContext(
+            jti=stored.jti,
+            sub=stored.sub,
+            exp=stored.exp,
+            delegated_user=stored.delegated_user,
+            agent_id=stored.agent_id,
+            actor_type=stored.actor_type,
+            capabilities=stored.capabilities,
+            user_capabilities=stored.user_capabilities,
+        )
     return TokenVerificationResult(
         auth_context=auth_context,
         error_code=None,

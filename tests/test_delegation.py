@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib
+import threading
+import time
 from uuid import uuid4
 
 import pytest
@@ -11,10 +13,12 @@ from app.delegation.capabilities import intersect_capabilities, parse_capabiliti
 from app.delegation.service import DelegationService
 from app.intent.crypto import build_signed_intent_node
 from app.intent.judge import IntentJudgeResult
+from app.delegation.credential_crypto import verify_credential_integrity
 from app.identity.keys import ensure_agent_keypair, private_key_path, public_key_path
 from app.identity.jwt_service import issue_token, verify_token
 from app.main import app, on_startup
 from app.protocol import AuthContext, DelegationEnvelope, DelegationHop, IntentCommitment
+from app.store.delegation_credentials import get_credential, list_credentials, upsert_credential
 from app.store.registry import get_agent, upsert_agent
 from app.store.tokens import get_token, revoke_token
 
@@ -151,7 +155,15 @@ def test_jwt_issue_verify_and_revoke() -> None:
     stored = get_token(issued["jti"])
     assert stored is not None
     assert stored.user_capabilities == ["report:write", "web.public:read"]
+    assert stored.credential_id == issued["credential_id"]
+    credential = get_credential(issued["credential_id"])
+    assert credential is not None
+    assert verify_credential_integrity(credential)
+    assert auth_context.credential_id == credential.credential_id
     assert revoke_token(issued["jti"])
+    revoked_credential = get_credential(issued["credential_id"])
+    assert revoked_credential is not None
+    assert revoked_credential.revoked
     with pytest.raises(Exception):
         verify_token(issued["access_token"])
 
@@ -202,6 +214,175 @@ def test_append_hop_shrinks_capabilities_and_context() -> None:
     assert authorized.auth_context is not None
     assert authorized.auth_context.capabilities == decision.effective_capabilities
     assert authorized.auth_context.agent_id == "enterprise_data_agent"
+
+
+def test_append_hop_creates_signed_child_credential() -> None:
+    issued = issue_token(
+        agent_id="doc_agent",
+        delegated_user="user_123",
+        capabilities=[
+            "report:write",
+            "feishu.contact:read",
+            "feishu.wiki:read",
+            "feishu.bitable:read",
+        ],
+        user_capabilities=[
+            "report:write",
+            "feishu.contact:read",
+            "feishu.wiki:read",
+            "feishu.bitable:read",
+        ],
+    )
+    auth_context = verify_token(issued["access_token"])
+    envelope = make_enterprise_envelope(auth_context=auth_context)
+    decision = DelegationService().authorize(envelope)
+
+    authorized = DelegationService().append_hop(envelope, decision.effective_capabilities)
+
+    assert authorized.auth_context is not None
+    assert authorized.auth_context.credential_id is not None
+    child = get_credential(authorized.auth_context.credential_id)
+    parent = get_credential(auth_context.credential_id)
+    assert child is not None
+    assert parent is not None
+    assert child.parent_credential_id == parent.credential_id
+    assert child.root_credential_id == parent.root_credential_id
+    assert child.subject_id == "enterprise_data_agent"
+    assert child.exp == parent.exp
+    assert set(child.capabilities) == set(decision.effective_capabilities)
+    assert verify_credential_integrity(child)
+
+
+def test_tampered_child_credential_is_rejected() -> None:
+    issued = issue_token(
+        agent_id="doc_agent",
+        delegated_user="user_123",
+        capabilities=[
+            "report:write",
+            "feishu.contact:read",
+            "feishu.wiki:read",
+            "feishu.bitable:read",
+            "web.public:read",
+        ],
+    )
+    auth_context = verify_token(issued["access_token"])
+    envelope = make_enterprise_envelope(auth_context=auth_context)
+    decision = DelegationService().authorize(envelope)
+    authorized = DelegationService().append_hop(envelope, decision.effective_capabilities)
+    child = get_credential(authorized.auth_context.credential_id)
+    assert child is not None
+    upsert_credential(child.model_copy(update={"capabilities": [*child.capabilities, "web.public:read"]}))
+
+    decision = DelegationService().authorize(
+        make_enterprise_envelope(
+            auth_context=authorized.auth_context,
+            chain=[
+                *authorized.delegation_chain,
+            ],
+        ).model_copy(update={"caller_agent_id": "enterprise_data_agent"})
+    )
+
+    assert decision.decision == "deny"
+    assert "AUTH_CREDENTIAL_INVALID" in decision.reason
+
+
+def test_child_credential_cannot_outlive_parent() -> None:
+    issued = issue_token(
+        agent_id="doc_agent",
+        delegated_user="user_123",
+        capabilities=[
+            "report:write",
+            "feishu.contact:read",
+            "feishu.wiki:read",
+            "feishu.bitable:read",
+        ],
+    )
+    auth_context = verify_token(issued["access_token"])
+    envelope = make_enterprise_envelope(auth_context=auth_context)
+    decision = DelegationService().authorize(envelope)
+    authorized = DelegationService().append_hop(envelope, decision.effective_capabilities)
+    child = get_credential(authorized.auth_context.credential_id)
+    assert child is not None
+    upsert_credential(child.model_copy(update={"exp": auth_context.exp + 60}))
+
+    decision = DelegationService().authorize(
+        make_enterprise_envelope(
+            auth_context=authorized.auth_context,
+            chain=[*authorized.delegation_chain],
+        ).model_copy(update={"caller_agent_id": "enterprise_data_agent"})
+    )
+
+    assert decision.decision == "deny"
+    assert "AUTH_CREDENTIAL_INVALID" in decision.reason
+
+
+def test_revoking_root_credential_revokes_descendants() -> None:
+    issued = issue_token(
+        agent_id="doc_agent",
+        delegated_user="user_123",
+        capabilities=[
+            "report:write",
+            "feishu.contact:read",
+            "feishu.wiki:read",
+            "feishu.bitable:read",
+        ],
+    )
+    auth_context = verify_token(issued["access_token"])
+    envelope = make_enterprise_envelope(auth_context=auth_context)
+    decision = DelegationService().authorize(envelope)
+    authorized = DelegationService().append_hop(envelope, decision.effective_capabilities)
+
+    assert revoke_token(issued["jti"], reason="test_revoke")
+
+    root = get_credential(auth_context.credential_id)
+    child = get_credential(authorized.auth_context.credential_id)
+    assert root is not None and root.revoked
+    assert child is not None and child.revoked
+
+
+def test_revoke_token_cancels_running_sleep_task() -> None:
+    client = TestClient(app)
+    issued = issue_token(
+        agent_id="doc_agent",
+        delegated_user="user_123",
+        capabilities=["report:write"],
+    )
+    trace_id = f"trace_sleep_cancel_{uuid4()}"
+    result: dict[str, object] = {}
+
+    def call_sleep() -> None:
+        result["response"] = client.post(
+            "/delegate/call",
+            headers={"Authorization": f"Bearer {issued['access_token']}"},
+            json=dict(
+                trace_id=trace_id,
+                request_id=f"req_sleep_cancel_{uuid4()}",
+                caller_agent_id="doc_agent",
+                target_agent_id="doc_agent",
+                task_type="sleep_task",
+                requested_capabilities=["report:write"],
+                delegation_chain=[],
+                payload={"seconds": 30},
+            ),
+        )
+
+    thread = threading.Thread(target=call_sleep)
+    thread.start()
+    deadline = time.time() + 5
+    while time.time() < deadline and not list_credentials(trace_id=trace_id):
+        time.sleep(0.05)
+
+    revoke_response = client.post(
+        f"/identity/tokens/{issued['jti']}/revoke",
+        json={"reason": "test_revoke"},
+    )
+    thread.join(timeout=5)
+
+    assert revoke_response.status_code == 200
+    assert not thread.is_alive()
+    response = result["response"]
+    assert response.status_code == 409
+    assert response.json()["detail"]["error_code"] == "TASK_CANCELLED"
 
 
 def test_doc_agent_delegation_is_allowed() -> None:

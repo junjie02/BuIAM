@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from fastapi import APIRouter, Header, HTTPException
 import httpx
 import time
 from uuid import uuid4
 
-from app.delegation.service import delegation_service, raise_for_denied
+from app.delegation.service import CredentialValidationError, delegation_service, raise_for_denied
 from app.gateway.local_adapter import call_local_agent
 from app.identity.jwt_service import (
     TokenError,
@@ -27,6 +28,7 @@ from app.protocol import (
 from app.store.audit import record_decision
 from app.store.auth_events import record_auth_event
 from app.store.registry import get_agent
+from app.runtime.tasks import register_task, unregister_task
 
 
 router = APIRouter()
@@ -129,13 +131,35 @@ def verify_bearer_for_envelope(
     return token_result
 
 
+def trusted_auth_context_for_envelope(envelope: DelegationEnvelope, bearer_auth_context):
+    envelope_auth_context = envelope.auth_context
+    if envelope_auth_context is None or envelope_auth_context.credential_id is None:
+        return bearer_auth_context
+    try:
+        credential = delegation_service.validate_auth_context_credential(envelope_auth_context)
+    except CredentialValidationError as error:
+        raise HTTPException(
+            status_code=403,
+            detail={"error_code": error.error_code, "message": error.message},
+        ) from error
+    if credential is None or credential.subject_id != bearer_auth_context.agent_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "AUTH_CREDENTIAL_SUBJECT_MISMATCH",
+                "message": "delegation credential subject does not match bearer token",
+            },
+        )
+    return envelope_auth_context
+
+
 @router.post("/delegate/call")
 async def delegate_call(
     envelope: DelegationEnvelope,
     authorization: str | None = Header(default=None),
 ) -> AgentTaskResponse:
     token_result = verify_bearer_for_envelope(envelope=envelope, authorization=authorization)
-    auth_context = token_result.auth_context
+    auth_context = trusted_auth_context_for_envelope(envelope, token_result.auth_context)
 
     trusted_envelope = envelope.model_copy(
         update={
@@ -184,10 +208,16 @@ async def delegate_call(
         decision.intent_judge_reason = intent_result.judge_reason
     record_decision(trusted_envelope, decision)
     raise_for_denied(decision)
-    authorized_envelope = delegation_service.append_hop(
-        trusted_envelope,
-        decision.effective_capabilities,
-    )
+    try:
+        authorized_envelope = delegation_service.append_hop(
+            trusted_envelope,
+            decision.effective_capabilities,
+        )
+    except CredentialValidationError as error:
+        raise HTTPException(
+            status_code=403,
+            detail={"error_code": error.error_code, "message": error.message},
+        ) from error
 
     try:
         return await forward_to_agent(target.endpoint, authorized_envelope)
@@ -277,6 +307,21 @@ async def root_task(
     if target is None:
         raise HTTPException(status_code=404, detail={"error_code": "AGENT_NOT_REGISTERED", "agent_id": request.target_agent_id})
 
+    try:
+        target_auth_context = delegation_service.build_child_auth_context(
+            parent_auth_context=auth_context,
+            issuer_id=auth_context.agent_id,
+            subject_id=request.target_agent_id,
+            capabilities=request.requested_capabilities,
+            trace_id=trace_id,
+            request_id=request_id,
+        )
+    except CredentialValidationError as error:
+        raise HTTPException(
+            status_code=403,
+            detail={"error_code": error.error_code, "message": error.message},
+        ) from error
+
     decision = DelegationDecision(
         decision="allow",
         reason="root user task accepted",
@@ -294,12 +339,28 @@ async def root_task(
         intent_judge_reason=intent_result.judge_reason,
     )
     record_decision(trusted_envelope, decision)
-    return await forward_to_agent(target.endpoint, trusted_envelope)
+    forward_envelope = trusted_envelope.model_copy(
+        update={
+            "caller_agent_id": request.target_agent_id,
+            "auth_context": target_auth_context,
+        }
+    )
+    return await forward_to_agent(target.endpoint, forward_envelope)
 
 
 async def forward_to_agent(endpoint: str, envelope: DelegationEnvelope) -> AgentTaskResponse:
     if endpoint.startswith("local://"):
-        return await call_local_agent(endpoint, envelope)
+        task = asyncio.create_task(call_local_agent(endpoint, envelope))
+        register_task(envelope.trace_id, task)
+        try:
+            return await task
+        except asyncio.CancelledError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={"error_code": "TASK_CANCELLED", "reason": str(error) or "token_revoked"},
+            ) from error
+        finally:
+            unregister_task(envelope.trace_id, task)
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(endpoint, json=envelope.model_dump())

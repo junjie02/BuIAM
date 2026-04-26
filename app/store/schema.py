@@ -56,6 +56,44 @@ def init_schema(db_path: Path = DB_PATH) -> None:
         )
         ensure_column(connection, "tokens", "actor_type", "actor_type TEXT NOT NULL DEFAULT 'agent'")
         ensure_column(connection, "tokens", "user_capabilities", "user_capabilities TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(connection, "tokens", "credential_id", "credential_id TEXT")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS delegation_credentials (
+                credential_id TEXT PRIMARY KEY,
+                parent_credential_id TEXT,
+                root_credential_id TEXT NOT NULL,
+                issuer_id TEXT NOT NULL,
+                subject_id TEXT NOT NULL,
+                delegated_user TEXT NOT NULL,
+                capabilities TEXT NOT NULL,
+                user_capabilities TEXT NOT NULL,
+                iat INTEGER NOT NULL,
+                exp INTEGER NOT NULL,
+                trace_id TEXT,
+                request_id TEXT,
+                content_hash TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                signature_alg TEXT NOT NULL,
+                revoked INTEGER NOT NULL DEFAULT 0,
+                revoked_at INTEGER,
+                revoke_reason TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_delegation_credentials_parent ON delegation_credentials(parent_credential_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_delegation_credentials_root ON delegation_credentials(root_credential_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_delegation_credentials_trace ON delegation_credentials(trace_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_delegation_credentials_subject ON delegation_credentials(subject_id)"
+        )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_logs (

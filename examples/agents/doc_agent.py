@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from app.delegation.client import delegation_client
 from app.protocol import AgentTaskResponse, DelegationEnvelope
 from examples.llm.client import get_llm_provider
@@ -9,6 +11,16 @@ AGENT_ID = "doc_agent"
 
 
 async def handle_task(envelope: DelegationEnvelope) -> AgentTaskResponse:
+    if envelope.task_type == "sleep_task":
+        seconds = float(envelope.payload.get("seconds", 30))
+        await asyncio.sleep(seconds)
+        return AgentTaskResponse(
+            agent_id=AGENT_ID,
+            trace_id=envelope.trace_id,
+            task_type=envelope.task_type,
+            result={"status": "completed", "seconds": seconds},
+        )
+
     if envelope.task_type == "ask_weather":
         search_envelope = delegation_client.build_envelope(
             trace_id=envelope.trace_id,
