@@ -55,6 +55,9 @@ class DecisionDetail(BaseModel):
     auth_event_recorded: bool = False
     token_jti: str | None = None
     token_agent_id: str | None = None
+    credential_id: str | None = None
+    parent_credential_id: str | None = None
+    root_credential_id: str | None = None
     intent_node_id: str | None = None
     parent_intent_node_id: str | None = None
     root_intent: str | None = None
@@ -75,7 +78,32 @@ class AuthContext(BaseModel):
     actor_type: Literal["user", "agent"] = "agent"
     delegated_user: str | None = None
     capabilities: list[str] = Field(default_factory=list)
+    user_capabilities: list[str] = Field(default_factory=list)
+    credential_id: str | None = None
+    parent_credential_id: str | None = None
+    root_credential_id: str | None = None
     sig: str | None = None
+
+
+class DelegationCredential(BaseModel):
+    credential_id: str
+    parent_credential_id: str | None = None
+    root_credential_id: str
+    issuer_id: str
+    subject_id: str
+    delegated_user: str
+    capabilities: list[str] = Field(default_factory=list)
+    user_capabilities: list[str] = Field(default_factory=list)
+    iat: int
+    exp: int
+    trace_id: str | None = None
+    request_id: str | None = None
+    content_hash: str
+    signature: str
+    signature_alg: str = "BUIAM-RS256"
+    revoked: bool = False
+    revoked_at: int | None = None
+    revoke_reason: str | None = None
 
 
 class DelegationEnvelope(BaseModel):
@@ -198,7 +226,12 @@ class TokenIssueRequest(BaseModel):
     delegated_user: str = "user_123"
     actor_type: Literal["user", "agent"] = "agent"
     capabilities: list[str] = Field(default_factory=list)
+    user_capabilities: list[str] = Field(default_factory=list)
     ttl_seconds: int = 3600
+
+
+class TokenRevokeRequest(BaseModel):
+    reason: str = "manual_revoke"
 
 
 class RootTaskRequest(BaseModel):

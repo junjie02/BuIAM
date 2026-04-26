@@ -1,19 +1,11 @@
 from __future__ import annotations
 
-import base64
-import hashlib
-import json
-
-from app.identity.keys import load_private_key, load_public_key
+from app.identity.crypto import canonical_json, rsa_sign, rsa_verify, sha256_hex
 from app.protocol import IntentNode
 
 
 ROOT_PARENT_ID = "ROOT"
 SIGNATURE_ALG = "BUIAM-RS256"
-
-
-def canonical_json(data: dict) -> str:
-    return json.dumps(data, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
 def intent_self_content(node: IntentNode) -> dict:
@@ -29,34 +21,24 @@ def intent_self_content(node: IntentNode) -> dict:
 
 
 def content_hash(node: IntentNode) -> str:
-    return hashlib.sha256(canonical_json(intent_self_content(node)).encode()).hexdigest()
+    return sha256_hex(canonical_json(intent_self_content(node)))
 
 
 def compute_node_id(node: IntentNode) -> str:
     parent_id = node.parent_node_id or ROOT_PARENT_ID
     raw = parent_id + canonical_json(intent_self_content(node))
-    return hashlib.sha256(raw.encode()).hexdigest()
+    return sha256_hex(raw)
 
 
 def sign_intent_node_content(actor_id: str, self_content: dict) -> str:
-    signing_input = canonical_json(self_content)
-    digest = hashlib.sha256(signing_input.encode()).digest()
-    private_key = load_private_key(actor_id)
-    signature_int = pow(int.from_bytes(digest, "big"), int(private_key["d"]), int(private_key["n"]))
-    length = (int(private_key["n"]).bit_length() + 7) // 8
-    return base64.urlsafe_b64encode(signature_int.to_bytes(length, "big")).rstrip(b"=").decode()
+    return rsa_sign(canonical_json(self_content), actor_id)
 
 
 def verify_intent_node_signature(node: IntentNode) -> bool:
     if node.signature_alg != SIGNATURE_ALG:
         return False
     try:
-        padding = "=" * (-len(node.signature) % 4)
-        signature_int = int.from_bytes(base64.urlsafe_b64decode(node.signature + padding), "big")
-        public_key = load_public_key(node.actor_id)
-        verified = pow(signature_int, int(public_key["e"]), int(public_key["n"]))
-        expected = int.from_bytes(hashlib.sha256(canonical_json(intent_self_content(node)).encode()).digest(), "big")
-        return verified == expected
+        return rsa_verify(canonical_json(intent_self_content(node)), node.signature, node.actor_id)
     except Exception:
         return False
 

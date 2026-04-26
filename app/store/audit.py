@@ -139,4 +139,13 @@ def decision_detail_json(envelope: DelegationEnvelope, decision: DelegationDecis
     detail["token_agent_id"] = (
         envelope.auth_context.agent_id if envelope.auth_context is not None else None
     )
+    detail["credential_id"] = (
+        envelope.auth_context.credential_id if envelope.auth_context is not None else None
+    )
+    detail["parent_credential_id"] = (
+        envelope.auth_context.parent_credential_id if envelope.auth_context is not None else None
+    )
+    detail["root_credential_id"] = (
+        envelope.auth_context.root_credential_id if envelope.auth_context is not None else None
+    )
     return json.dumps(detail, ensure_ascii=False)

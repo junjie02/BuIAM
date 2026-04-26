@@ -1,4 +1,4 @@
-﻿# BuIAM Delegation Protocol MVP
+﻿# BuIAM
 
 飞书校园挑战赛最小验证系统：3 个 Agent 协作，权限委托与审计由外置 Delegation Service 统一处理。
 

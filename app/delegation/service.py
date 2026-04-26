@@ -1,11 +1,26 @@
 from __future__ import annotations
 
+import time
+
 from fastapi import HTTPException
 
-from app.delegation.capabilities import intersect_capabilities, parse_capabilities
+from app.delegation.capabilities import intersect_capabilities, known_capabilities, parse_capabilities
+from app.delegation.credential_crypto import (
+    auth_context_from_credential,
+    build_delegation_credential,
+    verify_credential_integrity,
+)
 from app.protocol import DelegationDecision, DelegationEnvelope, DelegationHop
 from app.store.audit import record_decision
+from app.store.delegation_credentials import get_credential, upsert_credential
 from app.store.registry import get_agent
+
+
+class CredentialValidationError(Exception):
+    def __init__(self, error_code: str, message: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.message = message
 
 
 class DelegationService:
@@ -50,11 +65,25 @@ class DelegationService:
                 requested_capabilities=requested_for_error,
             )
 
-        delegated_user_caps = set(auth_context.capabilities)
+        try:
+            self.validate_auth_context_credential(auth_context)
+        except CredentialValidationError as error:
+            return DelegationDecision(
+                decision="deny",
+                reason=f"{error.error_code}: {error.message}",
+                effective_capabilities=[],
+                missing_capabilities=requested_for_error,
+                requested_capabilities=requested_for_error,
+            )
 
         try:
-            requested = parse_capabilities(envelope.requested_capabilities)
-            caller_token_caps = parse_capabilities(auth_context.capabilities)
+            known_caps = known_capabilities()
+            requested = parse_capabilities(envelope.requested_capabilities, known_caps)
+            caller_token_caps = parse_capabilities(auth_context.capabilities, known_caps)
+            delegated_user_caps = parse_capabilities(
+                auth_context.user_capabilities or auth_context.capabilities,
+                known_caps,
+            )
         except ValueError as error:
             return DelegationDecision(
                 decision="deny",
@@ -137,14 +166,13 @@ class DelegationService:
             missing_capabilities=[],
             decision="allow",
         )
-        next_auth_context = envelope.auth_context.model_copy(
-            update={
-                "jti": f"{envelope.auth_context.jti}:{envelope.request_id}",
-                "sub": envelope.target_agent_id,
-                "agent_id": envelope.target_agent_id,
-                "capabilities": effective_capabilities,
-                "sig": None,
-            }
+        next_auth_context = self.build_child_auth_context(
+            parent_auth_context=envelope.auth_context,
+            issuer_id=envelope.caller_agent_id,
+            subject_id=envelope.target_agent_id,
+            capabilities=effective_capabilities,
+            trace_id=envelope.trace_id,
+            request_id=envelope.request_id,
         )
         return envelope.model_copy(
             update={
@@ -168,6 +196,121 @@ class DelegationService:
             missing_capabilities=missing_capabilities,
             decision=decision,
         )
+
+    def build_child_auth_context(
+        self,
+        *,
+        parent_auth_context,
+        issuer_id: str,
+        subject_id: str,
+        capabilities: list[str],
+        trace_id: str,
+        request_id: str,
+    ):
+        parent_credential = self.validate_auth_context_credential(parent_auth_context)
+        if parent_credential is None:
+            return parent_auth_context.model_copy(
+                update={
+                    "jti": f"{parent_auth_context.jti}:{request_id}",
+                    "sub": subject_id,
+                    "agent_id": subject_id,
+                    "capabilities": capabilities,
+                    "sig": None,
+                }
+            )
+        if not set(capabilities).issubset(set(parent_credential.capabilities)):
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_INVALID",
+                "child delegation capabilities exceed parent",
+            )
+        child_credential = build_delegation_credential(
+            issuer_id=issuer_id,
+            subject_id=subject_id,
+            delegated_user=parent_credential.delegated_user,
+            capabilities=capabilities,
+            user_capabilities=parent_credential.user_capabilities,
+            exp=parent_credential.exp,
+            parent=parent_credential,
+            trace_id=trace_id,
+            request_id=request_id,
+        )
+        upsert_credential(child_credential)
+        return auth_context_from_credential(child_credential)
+
+    def validate_auth_context_credential(self, auth_context):
+        if auth_context is None or auth_context.credential_id is None:
+            return None
+        credential = get_credential(auth_context.credential_id)
+        if credential is None:
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_INVALID",
+                "delegation credential is not registered",
+            )
+        self.validate_credential_branch(credential)
+        if credential.subject_id != auth_context.agent_id or credential.subject_id != auth_context.sub:
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_INVALID",
+                "delegation credential subject does not match auth context",
+            )
+        if set(auth_context.capabilities) != set(credential.capabilities):
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_INVALID",
+                "delegation credential capabilities do not match auth context",
+            )
+        return credential
+
+    def validate_credential_branch(self, credential, *, current: bool = True) -> None:
+        now = int(time.time())
+        if not verify_credential_integrity(credential):
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_INVALID",
+                "delegation credential integrity verification failed",
+            )
+        if credential.revoked:
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_REVOKED" if current else "AUTH_PARENT_CREDENTIAL_REVOKED",
+                "delegation credential has been revoked",
+            )
+        if credential.exp < now:
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_EXPIRED" if current else "AUTH_PARENT_CREDENTIAL_EXPIRED",
+                "delegation credential has expired",
+            )
+        if credential.parent_credential_id is None:
+            if credential.root_credential_id != credential.credential_id:
+                raise CredentialValidationError(
+                    "AUTH_CREDENTIAL_INVALID",
+                    "root delegation credential id mismatch",
+                )
+            return
+
+        parent = get_credential(credential.parent_credential_id)
+        if parent is None:
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_INVALID",
+                "parent delegation credential is not registered",
+            )
+        if credential.root_credential_id != parent.root_credential_id:
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_INVALID",
+                "delegation credential root does not match parent",
+            )
+        if credential.exp > parent.exp:
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_INVALID",
+                "delegation credential expires after parent",
+            )
+        if not set(credential.capabilities).issubset(set(parent.capabilities)):
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_INVALID",
+                "delegation credential capabilities exceed parent",
+            )
+        if not set(credential.user_capabilities).issubset(set(parent.user_capabilities)):
+            raise CredentialValidationError(
+                "AUTH_CREDENTIAL_INVALID",
+                "delegation credential user capabilities exceed parent",
+            )
+        self.validate_credential_branch(parent, current=False)
 
 
 delegation_service = DelegationService()
