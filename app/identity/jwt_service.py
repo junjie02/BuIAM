@@ -86,7 +86,6 @@ def _rsa_verify(signing_input: str, signature: str, public_key: dict) -> bool:
 def issue_token(
     *,
     agent_id: str,
-<<<<<<< HEAD
     role: str,
     delegated_user: str | None = None,
     task_id: str | None = None,
@@ -94,36 +93,36 @@ def issue_token(
     aud: str | None = None,
     source_agent: str | None = None,
     target_agent: str | None = None,
+    source_ip: str | None = None,
+    client_instance_id: str | None = None,
     delegation_depth: int = 0,
     ttl_seconds: int = 300,  # 默认5分钟短时有效期
-=======
-    delegated_user: str,
-    capabilities: list[str],
-    actor_type: str = "agent",
-    ttl_seconds: int = 3600,
->>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
+    max_allowed_ttl: int = 86400,  # 最大有效期1天，防止超长令牌
 ) -> dict:
     now = int(time.time())
     exp = now + ttl_seconds
     jti = f"tok_{uuid4()}"
     header = {"alg": "BUIAM-RS256", "typ": "JWT", "kid": SYSTEM_KEY_ID}
     
+    # 限制最大有效期，防止超长令牌安全风险
+    if ttl_seconds > max_allowed_ttl:
+        ttl_seconds = max_allowed_ttl
+    exp = now + ttl_seconds
+    
     claims = {
         "jti": jti,
         "iss": ISSUER,
         "sub": agent_id,
         "agent_id": agent_id,
-<<<<<<< HEAD
         "role": role,
-=======
-        "actor_type": actor_type,
->>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
         "delegated_user": delegated_user,
         "task_id": task_id,
         "scope": scope or [],
         "aud": aud or AUDIENCE,
         "source_agent": source_agent,
         "target_agent": target_agent,
+        "source_ip": source_ip,
+        "client_instance_id": client_instance_id,
         "delegation_depth": delegation_depth,
         "iat": now,
         "exp": exp,
@@ -136,14 +135,9 @@ def issue_token(
         jti=jti,
         sub=agent_id,
         agent_id=agent_id,
-<<<<<<< HEAD
+        actor_type="agent",
         delegated_user=delegated_user or "",
         capabilities=scope or [],
-=======
-        actor_type=actor_type,
-        delegated_user=delegated_user,
-        capabilities=capabilities,
->>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
         exp=exp,
     )
     
@@ -172,7 +166,6 @@ def inspect_token(token: str) -> TokenVerificationResult:
         header_part, claims_part, signature = token.split(".")
         header = json.loads(_b64url_decode(header_part))
         claims = json.loads(_b64url_decode(claims_part))
-<<<<<<< HEAD
         kid = str(header.get("kid", ""))
         if header.get("alg") != "BUIAM-RS256" or kid != SYSTEM_KEY_ID:
             raise TokenError("AUTH_TOKEN_INVALID", "invalid token header")
@@ -205,15 +198,25 @@ def inspect_token(token: str) -> TokenVerificationResult:
             scope=claims.get("scope", []),
             source_agent=claims.get("source_agent"),
             target_agent=claims.get("target_agent"),
+            source_ip=claims.get("source_ip"),
+            client_instance_id=claims.get("client_instance_id"),
             delegation_depth=claims.get("delegation_depth", 0),
             exp=claims.get("exp", 0),
             jti=claims.get("jti", "")
         )
-        if int(claims["exp"]) < int(time.time()):
-            raise TokenError("AUTH_TOKEN_EXPIRED", "token has expired")
     except TokenError:
         raise
-=======
+
+
+def inspect_token(token: str) -> TokenVerificationResult:
+    verified_at = int(time.time())
+    fingerprint = token_fingerprint(token)
+    header: dict = {}
+    claims: dict = {}
+    try:
+        header_part, claims_part, signature = token.split(".")
+        header = json.loads(_b64url_decode(header_part))
+        claims = json.loads(_b64url_decode(claims_part))
         agent_id = str(header.get("kid", ""))
         if header.get("alg") != "BUIAM-RS256" or not agent_id:
             return failed_token_result(
@@ -269,7 +272,6 @@ def inspect_token(token: str) -> TokenVerificationResult:
                 audience_valid=True,
                 is_expired=True,
             )
->>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
     except Exception as error:
         return failed_token_result(
             token_fingerprint=fingerprint,

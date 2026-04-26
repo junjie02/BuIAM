@@ -70,17 +70,15 @@ class AuthContext(BaseModel):
     sub: str
     exp: int
     agent_id: str
-<<<<<<< HEAD
     role: str
     delegated_user: str | None = None
     task_id: str | None = None
     scope: list[str] = Field(default_factory=list)
     source_agent: str | None = None
     target_agent: str | None = None
+    source_ip: str | None = None
+    client_instance_id: str | None = None
     delegation_depth: int = 0
-=======
-    actor_type: Literal["user", "agent"] = "agent"
->>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
     capabilities: list[str] = Field(default_factory=list)
     sig: str | None = None
 

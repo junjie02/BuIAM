@@ -1,5 +1,5 @@
-﻿from __future__ import annotations
-
+from __future__ import annotations
+import time
 import json
 import sqlite3
 from pathlib import Path
@@ -97,6 +97,29 @@ def list_logs(db_path: Path = DB_PATH, trace_id: str | None = None) -> list[Audi
     with sqlite3.connect(db_path) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(query, params).fetchall()
+
+
+def cleanup_expired_audit_logs(retention_days: int = 30, db_path: Path = DB_PATH) -> int:
+    """清理超过保留期的审计日志，默认保留30天"""
+    init_db(db_path)
+    cutoff_time = time.time() - retention_days * 86400
+    cutoff_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(cutoff_time))
+    
+    with sqlite3.connect(db_path) as connection:
+        cursor = connection.execute(
+            "DELETE FROM audit_logs WHERE created_at < ?",
+            (cutoff_date,)
+        )
+        # 同时清理过期的授权事件和委托链记录
+        cursor.execute(
+            "DELETE FROM auth_events WHERE created_at < ?",
+            (cutoff_date,)
+        )
+        cursor.execute(
+            "DELETE FROM delegation_chain WHERE created_at < ?",
+            (cutoff_date,)
+        )
+    return cursor.rowcount
 
     return [
         AuditLog(

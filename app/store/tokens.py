@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import time
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -67,6 +67,28 @@ def revoke_token(jti: str, db_path: Path = DB_PATH) -> bool:
     with sqlite3.connect(db_path) as connection:
         cursor = connection.execute("UPDATE tokens SET revoked = 1 WHERE jti = ?", (jti,))
     return cursor.rowcount > 0
+
+
+def batch_revoke_tokens_by_agent(agent_id: str, db_path: Path = DB_PATH) -> int:
+    """吊销指定Agent的所有有效令牌"""
+    init_schema(db_path)
+    with sqlite3.connect(db_path) as connection:
+        cursor = connection.execute(
+            "UPDATE tokens SET revoked = 1 WHERE agent_id = ? AND revoked = 0 AND exp > ?",
+            (agent_id, int(time.time()))
+        )
+    return cursor.rowcount
+
+
+def cleanup_expired_tokens(db_path: Path = DB_PATH) -> int:
+    """清理已过期的令牌记录，返回清理的条数"""
+    init_schema(db_path)
+    now = int(time.time())
+    with sqlite3.connect(db_path) as connection:
+        cursor = connection.execute("DELETE FROM tokens WHERE exp < ?", (now,))
+        cursor.execute("DELETE FROM jti_seen WHERE first_seen_at < ?", 
+                      (time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now - 86400 * 7)),))
+    return cursor.rowcount
 
 
 def mark_jti_seen(jti: str, db_path: Path = DB_PATH) -> None:

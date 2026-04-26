@@ -1,12 +1,12 @@
 from __future__ import annotations
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.identity.jwt_service import issue_token, verify_token, TokenError
 from app.identity.keys import load_system_public_key
 from app.store.registry import get_agent
-from app.store.tokens import revoke_token
+from app.store.tokens import revoke_token, batch_revoke_tokens_by_agent, cleanup_expired_tokens
 
 class TokenIssueRequest(BaseModel):
     agent_id: str
@@ -17,6 +17,7 @@ class TokenIssueRequest(BaseModel):
     aud: Optional[str] = None
     source_agent: Optional[str] = None
     target_agent: Optional[str] = None
+    client_instance_id: Optional[str] = None
     delegation_depth: int = 0
     ttl_seconds: int = 300
 
@@ -28,33 +29,28 @@ router = APIRouter(prefix="/identity", tags=["identity"])
 
 
 @router.post("/tokens")
-def create_token(request: TokenIssueRequest) -> dict:
-<<<<<<< HEAD
+def create_token(request: TokenIssueRequest, fastapi_request: Request) -> dict:
     agent = get_agent(request.agent_id)
     if agent is None:
         raise HTTPException(status_code=404, detail={"error_code": "AGENT_NOT_REGISTERED", "message": "Agent未注册"})
     if agent.status != "active":
         raise HTTPException(status_code=403, detail={"error_code": "AGENT_INACTIVE", "message": "Agent已被禁用"})
     
-=======
-    if request.actor_type == "agent" and get_agent(request.agent_id) is None:
-        raise HTTPException(status_code=404, detail={"error_code": "AGENT_NOT_REGISTERED"})
->>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
+    # 获取客户端IP地址
+    client_ip = fastapi_request.client.host if fastapi_request.client else None
+    
     return issue_token(
         agent_id=request.agent_id,
         role=request.role,
         delegated_user=request.delegated_user,
-<<<<<<< HEAD
         task_id=request.task_id,
         scope=request.scope,
         aud=request.aud,
         source_agent=request.source_agent,
         target_agent=request.target_agent,
+        source_ip=client_ip,
+        client_instance_id=request.client_instance_id,
         delegation_depth=request.delegation_depth,
-=======
-        capabilities=request.capabilities,
-        actor_type=request.actor_type,
->>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
         ttl_seconds=request.ttl_seconds,
     )
 
@@ -100,3 +96,28 @@ def revoke(jti: str) -> dict:
     if not revoked:
         raise HTTPException(status_code=404, detail={"error_code": "AUTH_TOKEN_INVALID", "message": "令牌不存在"})
     return {"jti": jti, "revoked": True}
+
+
+@router.post("/agents/{agent_id}/revoke-all-tokens")
+def revoke_all_agent_tokens(agent_id: str) -> dict:
+    """吊销指定Agent的所有有效令牌"""
+    agent = get_agent(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail={"error_code": "AGENT_NOT_REGISTERED", "message": "Agent未注册"})
+    
+    revoked_count = batch_revoke_tokens_by_agent(agent_id)
+    return {
+        "agent_id": agent_id,
+        "revoked_tokens_count": revoked_count,
+        "message": f"已成功吊销{revoked_count}个有效令牌"
+    }
+
+
+@router.post("/tokens/cleanup-expired")
+def cleanup_expired() -> dict:
+    """手动触发清理过期令牌和黑名单数据"""
+    cleaned_count = cleanup_expired_tokens()
+    return {
+        "cleaned_count": cleaned_count,
+        "message": f"已成功清理{cleaned_count}条过期数据"
+    }
