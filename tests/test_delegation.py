@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+import app.delegation.capabilities as capability_module
 from app.delegation.capabilities import intersect_capabilities, parse_capabilities
 from app.delegation.service import DelegationService
 from app.intent.crypto import build_signed_intent_node
@@ -174,6 +175,23 @@ def test_delegation_chain_must_be_continuous() -> None:
     decision = DelegationService().authorize(make_enterprise_envelope(chain=forged_chain))
     assert decision.decision == "deny"
     assert "not continuous" in decision.reason
+
+
+def test_authorize_reuses_known_capabilities_within_request(monkeypatch) -> None:
+    calls = 0
+    original_list_agents = capability_module.list_agents
+
+    def counting_list_agents():
+        nonlocal calls
+        calls += 1
+        return original_list_agents()
+
+    monkeypatch.setattr(capability_module, "list_agents", counting_list_agents)
+
+    decision = DelegationService().authorize(make_enterprise_envelope())
+
+    assert decision.decision == "allow"
+    assert calls == 1
 
 
 def test_append_hop_shrinks_capabilities_and_context() -> None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 
-from app.delegation.capabilities import intersect_capabilities, parse_capabilities
+from app.delegation.capabilities import intersect_capabilities, known_capabilities, parse_capabilities
 from app.protocol import DelegationDecision, DelegationEnvelope, DelegationHop
 from app.store.audit import record_decision
 from app.store.registry import get_agent
@@ -51,9 +51,13 @@ class DelegationService:
             )
 
         try:
-            requested = parse_capabilities(envelope.requested_capabilities)
-            caller_token_caps = parse_capabilities(auth_context.capabilities)
-            delegated_user_caps = parse_capabilities(auth_context.user_capabilities or auth_context.capabilities)
+            known_caps = known_capabilities()
+            requested = parse_capabilities(envelope.requested_capabilities, known_caps)
+            caller_token_caps = parse_capabilities(auth_context.capabilities, known_caps)
+            delegated_user_caps = parse_capabilities(
+                auth_context.user_capabilities or auth_context.capabilities,
+                known_caps,
+            )
         except ValueError as error:
             return DelegationDecision(
                 decision="deny",
