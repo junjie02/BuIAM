@@ -7,7 +7,9 @@ from pydantic import BaseModel, Field
 
 Capability = Literal[
     "report:write",
+    "feishu.doc:write",
     "feishu.contact:read",
+    "feishu.calendar:read",
     "feishu.wiki:read",
     "feishu.bitable:read",
     "web.public:read",
@@ -72,9 +74,9 @@ class AuthContext(BaseModel):
     jti: str
     sub: str
     exp: int
-    delegated_user: str
     agent_id: str
     actor_type: Literal["user", "agent"] = "agent"
+    delegated_user: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     user_capabilities: list[str] = Field(default_factory=list)
     credential_id: str | None = None

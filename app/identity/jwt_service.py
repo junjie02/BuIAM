@@ -88,6 +88,8 @@ def issue_token(
     header = {"alg": "BUIAM-RS256", "typ": "JWT", "kid": agent_id}
     claims = {
         "jti": jti,
+        "iss": ISSUER,
+        "aud": AUDIENCE,
         "sub": agent_id,
         "agent_id": agent_id,
         "actor_type": actor_type,
@@ -96,8 +98,6 @@ def issue_token(
         "user_capabilities": stored_user_capabilities,
         "iat": now,
         "exp": exp,
-        "iss": ISSUER,
-        "aud": AUDIENCE,
     }
     signing_input = f"{_json_b64(header)}.{_json_b64(claims)}"
     token = f"{signing_input}.{rsa_sign(signing_input, agent_id)}"
@@ -144,14 +144,12 @@ def verify_token(token: str) -> AuthContext:
 def inspect_token(token: str) -> TokenVerificationResult:
     verified_at = int(time.time())
     fingerprint = token_fingerprint(token)
-    header: dict = {}
     claims: dict = {}
     try:
         header_part, claims_part, signature = token.split(".")
         header = json.loads(_b64url_decode(header_part))
         claims = json.loads(_b64url_decode(claims_part))
-        agent_id = str(header.get("kid", ""))
-        if header.get("alg") != "BUIAM-RS256" or not agent_id:
+        if header.get("alg") != "BUIAM-RS256" or header.get("kid") != SYSTEM_KEY_ID:
             return failed_token_result(
                 token_fingerprint=fingerprint,
                 verified_at=verified_at,
@@ -192,8 +190,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
                 issuer_valid=True,
                 audience_valid=False,
             )
-        is_expired = int(claims["exp"]) < verified_at
-        if is_expired:
+        if int(claims.get("exp", 0)) < verified_at:
             return failed_token_result(
                 token_fingerprint=fingerprint,
                 verified_at=verified_at,
@@ -205,7 +202,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
                 audience_valid=True,
                 is_expired=True,
             )
-    except Exception as error:
+    except Exception:
         return failed_token_result(
             token_fingerprint=fingerprint,
             verified_at=verified_at,
@@ -242,6 +239,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
             is_jti_registered=True,
             is_revoked=True,
         )
+
     mark_jti_seen(stored.jti)
     root_credential = get_credential(stored.credential_id) if stored.credential_id else None
     if stored.credential_id and root_credential is None:

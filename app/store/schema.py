@@ -24,10 +24,17 @@ def init_schema(db_path: Path = DB_PATH) -> None:
             """
             CREATE TABLE IF NOT EXISTS agents (
                 agent_id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
+                name TEXT NOT NULL UNIQUE,
+                agent_type TEXT NOT NULL,
+                description TEXT NOT NULL,
+                owner_org TEXT NOT NULL,
+                allowed_resource_domains TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
                 endpoint TEXT NOT NULL,
                 static_capabilities TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                last_seen_at TEXT
             )
             """
         )

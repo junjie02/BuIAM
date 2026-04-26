@@ -9,6 +9,7 @@ from pathlib import Path
 
 KEY_DIR = Path("data/keys")
 PUBLIC_EXPONENT = 65537
+SYSTEM_KEY_ID = "buiam-auth-system"
 
 
 def private_key_path(agent_id: str) -> Path:
@@ -17,6 +18,20 @@ def private_key_path(agent_id: str) -> Path:
 
 def public_key_path(agent_id: str) -> Path:
     return KEY_DIR / f"{agent_id}_public.pem"
+
+
+def ensure_system_keypair() -> None:
+    ensure_agent_keypair(SYSTEM_KEY_ID)
+
+
+def load_system_private_key() -> dict:
+    ensure_system_keypair()
+    return load_private_key(SYSTEM_KEY_ID)
+
+
+def load_system_public_key() -> dict:
+    ensure_system_keypair()
+    return load_public_key(SYSTEM_KEY_ID)
 
 
 def _is_probable_prime(candidate: int, rounds: int = 12) -> bool:
