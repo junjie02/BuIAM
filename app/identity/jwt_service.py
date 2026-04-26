@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from uuid import uuid4
 
-from app.identity.keys import load_private_key, load_public_key, load_system_private_key, load_system_public_key, SYSTEM_KEY_ID
+from app.identity.keys import SYSTEM_KEY_ID, load_system_private_key, load_system_public_key
 from app.protocol import AuthContext
 from app.store.tokens import get_token, mark_jti_seen, store_token
 
@@ -86,73 +86,44 @@ def _rsa_verify(signing_input: str, signature: str, public_key: dict) -> bool:
 def issue_token(
     *,
     agent_id: str,
-<<<<<<< HEAD
-    role: str,
-    delegated_user: str | None = None,
-    task_id: str | None = None,
-    scope: list[str] | None = None,
-    aud: str | None = None,
-    source_agent: str | None = None,
-    target_agent: str | None = None,
-    delegation_depth: int = 0,
-    ttl_seconds: int = 300,  # 默认5分钟短时有效期
-=======
     delegated_user: str,
     capabilities: list[str],
     actor_type: str = "agent",
     ttl_seconds: int = 3600,
->>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
 ) -> dict:
     now = int(time.time())
     exp = now + ttl_seconds
     jti = f"tok_{uuid4()}"
     header = {"alg": "BUIAM-RS256", "typ": "JWT", "kid": SYSTEM_KEY_ID}
-    
     claims = {
         "jti": jti,
         "iss": ISSUER,
+        "aud": AUDIENCE,
         "sub": agent_id,
         "agent_id": agent_id,
-<<<<<<< HEAD
-        "role": role,
-=======
         "actor_type": actor_type,
->>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
         "delegated_user": delegated_user,
-        "task_id": task_id,
-        "scope": scope or [],
-        "aud": aud or AUDIENCE,
-        "source_agent": source_agent,
-        "target_agent": target_agent,
-        "delegation_depth": delegation_depth,
+        "capabilities": capabilities,
         "iat": now,
         "exp": exp,
     }
-    
     signing_input = f"{_json_b64(header)}.{_json_b64(claims)}"
     token = f"{signing_input}.{_rsa_sign(signing_input, load_system_private_key())}"
-    
     store_token(
         jti=jti,
         sub=agent_id,
         agent_id=agent_id,
-<<<<<<< HEAD
-        delegated_user=delegated_user or "",
-        capabilities=scope or [],
-=======
         actor_type=actor_type,
         delegated_user=delegated_user,
         capabilities=capabilities,
->>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
         exp=exp,
     )
-    
     return {
         "access_token": token,
         "token_type": "bearer",
         "jti": jti,
         "exp": exp,
-        "expires_in": ttl_seconds
+        "expires_in": ttl_seconds,
     }
 
 
@@ -166,56 +137,12 @@ def verify_token(token: str) -> AuthContext:
 def inspect_token(token: str) -> TokenVerificationResult:
     verified_at = int(time.time())
     fingerprint = token_fingerprint(token)
-    header: dict = {}
     claims: dict = {}
     try:
         header_part, claims_part, signature = token.split(".")
         header = json.loads(_b64url_decode(header_part))
         claims = json.loads(_b64url_decode(claims_part))
-<<<<<<< HEAD
-        kid = str(header.get("kid", ""))
-        if header.get("alg") != "BUIAM-RS256" or kid != SYSTEM_KEY_ID:
-            raise TokenError("AUTH_TOKEN_INVALID", "invalid token header")
-        
-        # 验证签名
-        signing_input = f"{header_part}.{claims_part}"
-        if not _rsa_verify(signing_input, signature, load_system_public_key()):
-            raise TokenError("AUTH_TOKEN_INVALID", "token signature verification failed")
-        
-        # 验证签发方和受众
-        if claims.get("iss") != ISSUER:
-            raise TokenError("AUTH_TOKEN_INVALID", "token issuer mismatch")
-        
-        # 验证过期时间
-        now = int(time.time())
-        if claims.get("exp", 0) < now:
-            raise TokenError("AUTH_TOKEN_EXPIRED", "token has expired")
-        
-        # 检查是否被吊销
-        token_record = get_token(claims.get("jti", ""))
-        if not token_record or token_record.revoked:
-            raise TokenError("AUTH_TOKEN_REVOKED", "token has been revoked")
-        
-        # 返回完整身份上下文
-        return AuthContext(
-            agent_id=claims.get("agent_id", ""),
-            role=claims.get("role", ""),
-            delegated_user=claims.get("delegated_user"),
-            task_id=claims.get("task_id"),
-            scope=claims.get("scope", []),
-            source_agent=claims.get("source_agent"),
-            target_agent=claims.get("target_agent"),
-            delegation_depth=claims.get("delegation_depth", 0),
-            exp=claims.get("exp", 0),
-            jti=claims.get("jti", "")
-        )
-        if int(claims["exp"]) < int(time.time()):
-            raise TokenError("AUTH_TOKEN_EXPIRED", "token has expired")
-    except TokenError:
-        raise
-=======
-        agent_id = str(header.get("kid", ""))
-        if header.get("alg") != "BUIAM-RS256" or not agent_id:
+        if header.get("alg") != "BUIAM-RS256" or header.get("kid") != SYSTEM_KEY_ID:
             return failed_token_result(
                 token_fingerprint=fingerprint,
                 verified_at=verified_at,
@@ -224,7 +151,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
                 message="invalid token header",
             )
         signing_input = f"{header_part}.{claims_part}"
-        if not _rsa_verify(signing_input, signature, load_public_key(agent_id)):
+        if not _rsa_verify(signing_input, signature, load_system_public_key()):
             return failed_token_result(
                 token_fingerprint=fingerprint,
                 verified_at=verified_at,
@@ -256,8 +183,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
                 issuer_valid=True,
                 audience_valid=False,
             )
-        is_expired = int(claims["exp"]) < verified_at
-        if is_expired:
+        if int(claims.get("exp", 0)) < verified_at:
             return failed_token_result(
                 token_fingerprint=fingerprint,
                 verified_at=verified_at,
@@ -269,8 +195,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
                 audience_valid=True,
                 is_expired=True,
             )
->>>>>>> 1ceabae7d5b79f5a379e7b9938e6ea923b641840
-    except Exception as error:
+    except Exception:
         return failed_token_result(
             token_fingerprint=fingerprint,
             verified_at=verified_at,
@@ -307,6 +232,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
             is_jti_registered=True,
             is_revoked=True,
         )
+
     mark_jti_seen(stored.jti)
     auth_context = AuthContext(
         jti=stored.jti,
@@ -314,7 +240,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
         exp=stored.exp,
         delegated_user=stored.delegated_user,
         agent_id=stored.agent_id,
-        actor_type=stored.actor_type,
+        actor_type=stored.actor_type,  # type: ignore[arg-type]
         capabilities=stored.capabilities,
     )
     return TokenVerificationResult(

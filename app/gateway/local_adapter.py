@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from fastapi import HTTPException
+try:
+    from fastapi import HTTPException
+except ModuleNotFoundError:  # pragma: no cover - fallback for local scripts/tests without FastAPI installed
+    class HTTPException(Exception):
+        def __init__(self, status_code: int, detail: dict) -> None:
+            super().__init__(detail)
+            self.status_code = status_code
+            self.detail = detail
 
 from app.protocol import AgentTaskResponse, DelegationEnvelope
 from examples.agents.registry import get_agent_handler

@@ -140,8 +140,16 @@ def list_agents(db_path: Path = DB_PATH) -> list[RegisteredAgent]:
         RegisteredAgent(
             agent_id=row["agent_id"],
             name=row["name"],
+            agent_type=row["agent_type"],
+            description=row["description"],
+            owner_org=row["owner_org"],
+            allowed_resource_domains=frozenset(row["allowed_resource_domains"].split(",")),
+            status=row["status"],
             endpoint=row["endpoint"],
             static_capabilities=frozenset(json.loads(row["static_capabilities"])),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            last_seen_at=row["last_seen_at"],
         )
         for row in rows
     ]
