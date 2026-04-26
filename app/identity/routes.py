@@ -19,6 +19,7 @@ def create_token(request: TokenIssueRequest) -> dict:
         agent_id=request.agent_id,
         delegated_user=request.delegated_user,
         capabilities=request.capabilities,
+        user_capabilities=request.user_capabilities or None,
         actor_type=request.actor_type,
         ttl_seconds=request.ttl_seconds,
     )

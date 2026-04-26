@@ -73,6 +73,7 @@ class AuthContext(BaseModel):
     agent_id: str
     actor_type: Literal["user", "agent"] = "agent"
     capabilities: list[str] = Field(default_factory=list)
+    user_capabilities: list[str] = Field(default_factory=list)
     sig: str | None = None
 
 
@@ -196,6 +197,7 @@ class TokenIssueRequest(BaseModel):
     delegated_user: str = "user_123"
     actor_type: Literal["user", "agent"] = "agent"
     capabilities: list[str] = Field(default_factory=list)
+    user_capabilities: list[str] = Field(default_factory=list)
     ttl_seconds: int = 3600
 
 

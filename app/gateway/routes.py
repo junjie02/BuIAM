@@ -283,7 +283,7 @@ async def root_task(
         effective_capabilities=request.requested_capabilities,
         requested_capabilities=request.requested_capabilities,
         caller_token_capabilities=auth_context.capabilities,
-        user_capabilities=auth_context.capabilities,
+        user_capabilities=auth_context.user_capabilities or auth_context.capabilities,
         intent_node_id=root_node.node_id,
         parent_intent_node_id=None,
         root_intent=intent_result.root_intent,

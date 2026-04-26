@@ -50,11 +50,10 @@ class DelegationService:
                 requested_capabilities=requested_for_error,
             )
 
-        delegated_user_caps = set(auth_context.capabilities)
-
         try:
             requested = parse_capabilities(envelope.requested_capabilities)
             caller_token_caps = parse_capabilities(auth_context.capabilities)
+            delegated_user_caps = parse_capabilities(auth_context.user_capabilities or auth_context.capabilities)
         except ValueError as error:
             return DelegationDecision(
                 decision="deny",

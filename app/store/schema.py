@@ -55,6 +55,7 @@ def init_schema(db_path: Path = DB_PATH) -> None:
             """
         )
         ensure_column(connection, "tokens", "actor_type", "actor_type TEXT NOT NULL DEFAULT 'agent'")
+        ensure_column(connection, "tokens", "user_capabilities", "user_capabilities TEXT NOT NULL DEFAULT '[]'")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_logs (

@@ -88,12 +88,14 @@ def issue_token(
     agent_id: str,
     delegated_user: str,
     capabilities: list[str],
+    user_capabilities: list[str] | None = None,
     actor_type: str = "agent",
     ttl_seconds: int = 3600,
 ) -> dict:
     now = int(time.time())
     exp = now + ttl_seconds
     jti = f"tok_{uuid4()}"
+    stored_user_capabilities = capabilities if user_capabilities is None else user_capabilities
     header = {"alg": "BUIAM-RS256", "typ": "JWT", "kid": agent_id}
     claims = {
         "jti": jti,
@@ -102,6 +104,7 @@ def issue_token(
         "actor_type": actor_type,
         "delegated_user": delegated_user,
         "capabilities": capabilities,
+        "user_capabilities": stored_user_capabilities,
         "iat": now,
         "exp": exp,
         "iss": ISSUER,
@@ -116,6 +119,7 @@ def issue_token(
         actor_type=actor_type,
         delegated_user=delegated_user,
         capabilities=capabilities,
+        user_capabilities=stored_user_capabilities,
         exp=exp,
     )
     return {"access_token": token, "token_type": "bearer", "jti": jti, "exp": exp}
@@ -238,6 +242,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
         agent_id=stored.agent_id,
         actor_type=stored.actor_type,
         capabilities=stored.capabilities,
+        user_capabilities=stored.user_capabilities,
     )
     return TokenVerificationResult(
         auth_context=auth_context,

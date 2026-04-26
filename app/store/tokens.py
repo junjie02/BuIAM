@@ -16,6 +16,7 @@ class StoredToken:
     actor_type: str
     delegated_user: str
     capabilities: list[str]
+    user_capabilities: list[str]
     exp: int
     revoked: bool
 
@@ -28,18 +29,30 @@ def store_token(
     actor_type: str,
     delegated_user: str,
     capabilities: list[str],
+    user_capabilities: list[str] | None = None,
     exp: int,
     db_path: Path = DB_PATH,
 ) -> None:
     init_schema(db_path)
+    stored_user_capabilities = capabilities if user_capabilities is None else user_capabilities
     with sqlite3.connect(db_path) as connection:
         connection.execute(
             """
             INSERT OR REPLACE INTO tokens
-            (jti, sub, agent_id, actor_type, delegated_user, capabilities, exp, revoked)
-            VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT revoked FROM tokens WHERE jti = ?), 0))
+            (jti, sub, agent_id, actor_type, delegated_user, capabilities, user_capabilities, exp, revoked)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT revoked FROM tokens WHERE jti = ?), 0))
             """,
-            (jti, sub, agent_id, actor_type, delegated_user, json.dumps(capabilities), exp, jti),
+            (
+                jti,
+                sub,
+                agent_id,
+                actor_type,
+                delegated_user,
+                json.dumps(capabilities),
+                json.dumps(stored_user_capabilities),
+                exp,
+                jti,
+            ),
         )
 
 
@@ -57,6 +70,7 @@ def get_token(jti: str, db_path: Path = DB_PATH) -> StoredToken | None:
         actor_type=row["actor_type"],
         delegated_user=row["delegated_user"],
         capabilities=json.loads(row["capabilities"]),
+        user_capabilities=json.loads(row["user_capabilities"]),
         exp=int(row["exp"]),
         revoked=bool(row["revoked"]),
     )

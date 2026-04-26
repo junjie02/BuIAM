@@ -15,7 +15,7 @@ from app.identity.jwt_service import issue_token, verify_token
 from app.main import app, on_startup
 from app.protocol import AuthContext, DelegationEnvelope, DelegationHop, IntentCommitment
 from app.store.registry import get_agent, upsert_agent
-from app.store.tokens import revoke_token
+from app.store.tokens import get_token, revoke_token
 
 
 def make_auth_context(
@@ -141,10 +141,15 @@ def test_jwt_issue_verify_and_revoke() -> None:
         agent_id="doc_agent",
         delegated_user="user_123",
         capabilities=["report:write"],
+        user_capabilities=["report:write", "web.public:read"],
     )
     auth_context = verify_token(issued["access_token"])
     assert auth_context.agent_id == "doc_agent"
     assert auth_context.capabilities == ["report:write"]
+    assert auth_context.user_capabilities == ["report:write", "web.public:read"]
+    stored = get_token(issued["jti"])
+    assert stored is not None
+    assert stored.user_capabilities == ["report:write", "web.public:read"]
     assert revoke_token(issued["jti"])
     with pytest.raises(Exception):
         verify_token(issued["access_token"])
@@ -245,6 +250,48 @@ def test_doc_agent_delegation_is_allowed() -> None:
         "feishu.contact:read",
         "feishu.wiki:read",
     ]
+
+
+def test_delegation_is_denied_when_user_capabilities_do_not_cover_request() -> None:
+    client = TestClient(app)
+    on_startup()
+    register_demo_agents()
+    issued = issue_token(
+        agent_id="doc_agent",
+        delegated_user="user_123",
+        capabilities=["report:write", "feishu.contact:read"],
+        user_capabilities=["report:write"],
+        ttl_seconds=3600,
+    )
+    trace_id = f"trace_user_caps_denied_{uuid4()}"
+    response = client.post(
+        "/delegate/call",
+        headers={"Authorization": f"Bearer {issued['access_token']}"},
+        json=DelegationEnvelope(
+            trace_id=trace_id,
+            request_id=f"req_user_caps_denied_{uuid4()}",
+            caller_agent_id="doc_agent",
+            target_agent_id="enterprise_data_agent",
+            task_type="read_enterprise_data",
+            requested_capabilities=["feishu.contact:read"],
+            delegation_chain=[
+                DelegationHop(
+                    from_actor="user",
+                    to_agent_id="doc_agent",
+                    task_type="generate_report",
+                    delegated_capabilities=["report:write", "feishu.contact:read"],
+                    decision="root",
+                )
+            ],
+            payload={},
+        ).model_dump(),
+    )
+    assert response.status_code == 403
+    latest_log = client.get(f"/audit/traces/{trace_id}").json()["logs"][-1]
+    detail = latest_log["decision_detail"]
+    assert detail["caller_token_capabilities"] == ["feishu.contact:read", "report:write"]
+    assert detail["user_capabilities"] == ["report:write"]
+    assert detail["missing_by"]["user"] == ["feishu.contact:read"]
 
 
 def test_external_search_agent_delegation_is_denied() -> None:
