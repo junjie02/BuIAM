@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
@@ -8,6 +10,7 @@ load_dotenv()
 from app.gateway.routes import router as gateway_router
 from app.identity.routes import router as identity_router
 from app.registry.routes import router as registry_router
+from app.registry.bootstrap import register_demo_agents
 from app.store.audit import list_logs
 from app.store.auth_events import list_auth_events
 from app.store.chain import list_chain
@@ -16,15 +19,21 @@ from app.store.intent_tree import get_intent_node, list_intent_tree
 from app.store.schema import init_schema
 
 
-app = FastAPI(title="BuIAM Agent Security Service")
+def on_startup() -> None:
+    init_schema()
+    register_demo_agents()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    on_startup()
+    yield
+
+
+app = FastAPI(title="BuIAM Agent Security Service", lifespan=lifespan)
 app.include_router(gateway_router)
 app.include_router(identity_router)
 app.include_router(registry_router)
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    init_schema()
 
 
 @app.get("/health")

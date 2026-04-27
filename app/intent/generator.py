@@ -39,7 +39,7 @@ async def generate_intent_commitment(
     task_type: str,
     payload: dict[str, Any],
 ) -> GeneratedIntent:
-    provider = os.getenv("INTENT_GENERATOR_PROVIDER", os.getenv("LLM_PROVIDER", "openai")).lower()
+    provider = os.getenv("INTENT_GENERATOR_PROVIDER", os.getenv("LLM_PROVIDER", "mock")).lower()
     user_payload = json.dumps(
         {
             "user_task": user_task,
@@ -51,7 +51,18 @@ async def generate_intent_commitment(
         },
         ensure_ascii=False,
     )
-    if provider == "anthropic":
+    if provider in {"mock", "demo"}:
+        model = "mock-intent-generator"
+        raw = json.dumps(
+            {
+                "intent": f"{actor_id} requests {target_agent_id} to run {task_type}: {user_task}",
+                "description": "Deterministic demo intent commitment.",
+                "data_refs": sorted(str(key) for key in payload.keys()),
+                "constraints": ["demo intent provider", "preserve delegated capability boundary"],
+            },
+            ensure_ascii=False,
+        )
+    elif provider == "anthropic":
         model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
         raw = await call_anthropic(load_prompt(), user_payload, model)
     elif provider == "openai":

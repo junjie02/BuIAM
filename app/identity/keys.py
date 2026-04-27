@@ -3,11 +3,12 @@ from __future__ import annotations
 import base64
 import json
 import math
+import os
 import secrets
 from pathlib import Path
 
 
-KEY_DIR = Path("data/keys")
+KEY_DIR = Path(os.getenv("BUIAM_KEY_DIR", "data/keys"))
 PUBLIC_EXPONENT = 65537
 SYSTEM_KEY_ID = "buiam-auth-system"
 

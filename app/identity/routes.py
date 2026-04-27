@@ -1,25 +1,15 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, HTTPException
-
-from app.identity.jwt_service import issue_token
-from app.protocol import TokenIssueRequest, TokenRevokeRequest
-from app.runtime.tasks import cancel_traces
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.identity.jwt_service import TokenError, issue_token, verify_token
-from app.identity.keys import load_system_public_key
+from app.identity.keys import load_public_key
+from app.protocol import TokenIssueRequest, TokenRevokeRequest
+from app.registry.bootstrap import USER_ID
+from app.runtime.tasks import cancel_traces
 from app.store.registry import get_agent
 from app.store.tokens import revoke_token_and_credentials
-
-
-class TokenIssueRequest(BaseModel):
-    agent_id: str
-    delegated_user: str = "user_123"
-    actor_type: str = "agent"
-    capabilities: list[str] = Field(default_factory=list)
-    ttl_seconds: int = 3600
 
 
 class TokenIntrospectRequest(BaseModel):
@@ -37,11 +27,13 @@ def create_token(request: TokenIssueRequest) -> dict:
             raise HTTPException(status_code=404, detail={"error_code": "AGENT_NOT_REGISTERED"})
         if agent.status != "active":
             raise HTTPException(status_code=403, detail={"error_code": "AGENT_INACTIVE"})
+
+    delegated_user = request.delegated_user or USER_ID
     return issue_token(
         agent_id=request.agent_id,
-        delegated_user=request.delegated_user,
+        delegated_user=delegated_user,
         capabilities=request.capabilities,
-        user_capabilities=request.user_capabilities or None,
+        user_capabilities=request.user_capabilities or request.capabilities,
         actor_type=request.actor_type,
         ttl_seconds=request.ttl_seconds,
     )
@@ -51,23 +43,26 @@ def create_token(request: TokenIssueRequest) -> dict:
 def introspect_token(request: TokenIntrospectRequest) -> dict:
     try:
         auth_context = verify_token(request.token)
-        return {
-            "active": True,
-            "agent_id": auth_context.agent_id,
-            "actor_type": auth_context.actor_type,
-            "delegated_user": auth_context.delegated_user,
-            "capabilities": auth_context.capabilities,
-            "exp": auth_context.exp,
-            "jti": auth_context.jti,
-        }
     except TokenError as error:
         return {"active": False, "error_code": error.error_code, "message": error.message}
+    return {
+        "active": True,
+        "agent_id": auth_context.agent_id,
+        "actor_type": auth_context.actor_type,
+        "delegated_user": auth_context.delegated_user,
+        "capabilities": auth_context.capabilities,
+        "user_capabilities": auth_context.user_capabilities,
+        "exp": auth_context.exp,
+        "jti": auth_context.jti,
+        "credential_id": auth_context.credential_id,
+        "root_credential_id": auth_context.root_credential_id,
+    }
 
 
-@router.get("/public-key")
-def get_public_key() -> dict:
-    pub_key = load_system_public_key()
-    return {"kty": pub_key["kty"], "n": pub_key["n"], "e": pub_key["e"]}
+@router.get("/public-key/{key_id}")
+def get_public_key(key_id: str) -> dict:
+    public_key = load_public_key(key_id)
+    return {"kid": key_id, "kty": public_key["kty"], "n": public_key["n"], "e": public_key["e"]}
 
 
 @router.post("/tokens/{jti}/revoke")
@@ -76,10 +71,9 @@ def revoke(jti: str, request: TokenRevokeRequest | None = Body(default=None)) ->
     revoked, trace_ids = revoke_token_and_credentials(jti, reason=reason)
     if not revoked:
         raise HTTPException(status_code=404, detail={"error_code": "AUTH_TOKEN_INVALID"})
-    cancelled_tasks = cancel_traces(trace_ids, "token_revoked")
     return {
         "jti": jti,
         "revoked": True,
         "trace_ids": trace_ids,
-        "cancelled_tasks": cancelled_tasks,
+        "cancelled_tasks": cancel_traces(trace_ids, "token_revoked"),
     }

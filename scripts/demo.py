@@ -2,60 +2,101 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import httpx
+import uvicorn
+from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+load_dotenv()
 
-from app.identity.keys import ensure_agent_keypair
-from app.main import app, on_startup
-from app.protocol import DelegationEnvelope, DelegationHop
-from app.store.registry import upsert_agent
+os.environ.setdefault("LLM_PROVIDER", "mock")
+os.environ.setdefault("INTENT_GENERATOR_PROVIDER", "mock")
+os.environ.setdefault("INTENT_JUDGE_PROVIDER", "mock")
 
-
-DEMO_AGENTS = {
-    "doc_agent": {
-        "name": "飞书文档助手 Agent",
-        "endpoint": "local://doc_agent",
-        "static_capabilities": ["report:write"],
-    },
-    "enterprise_data_agent": {
-        "name": "企业数据 Agent",
-        "endpoint": "local://enterprise_data_agent",
-        "static_capabilities": ["feishu.contact:read", "feishu.wiki:read", "feishu.bitable:read"],
-    },
-    "external_search_agent": {
-        "name": "外部检索 Agent",
-        "endpoint": "local://external_search_agent",
-        "static_capabilities": ["web.public:read"],
-    },
-}
+from app.main import app as gateway_app
+from app.protocol import RootTaskRequest
+from examples.agent.doc_service import app as doc_app
+from examples.agent.enterprise_data_service import app as enterprise_app
+from examples.agent.external_search_service import app as external_app
 
 
-def bootstrap_demo_agents() -> None:
-    ensure_agent_keypair("user_123")
-    for agent_id, config in DEMO_AGENTS.items():
-        ensure_agent_keypair(agent_id)
-        upsert_agent(agent_id, config["name"], config["endpoint"], config["static_capabilities"])
+GATEWAY_URL = os.getenv("BUIAM_GATEWAY_URL", "http://127.0.0.1:8000")
+USER_ID = os.getenv("BUIAM_DEMO_USER_ID", "user_123")
+DOC_AGENT_ENDPOINT = os.getenv("DOC_AGENT_ENDPOINT", "http://127.0.0.1:8011/a2a/tasks")
+ENTERPRISE_DATA_AGENT_ENDPOINT = os.getenv("ENTERPRISE_DATA_AGENT_ENDPOINT", "http://127.0.0.1:8012/a2a/tasks")
+EXTERNAL_SEARCH_AGENT_ENDPOINT = os.getenv("EXTERNAL_SEARCH_AGENT_ENDPOINT", "http://127.0.0.1:8013/a2a/tasks")
+ALL_CAPABILITIES = [
+    "report:write",
+    "feishu.doc:write",
+    "feishu.contact:read",
+    "feishu.calendar:read",
+    "feishu.wiki:read",
+    "feishu.bitable:read",
+    "web.public:read",
+]
 
 
-async def issue_token(
-    client: httpx.AsyncClient,
-    actor_id: str,
-    capabilities: list[str],
-    *,
-    actor_type: str = "agent",
-) -> str:
+def port_from_url(url: str, default: int) -> int:
+    parsed = urlparse(url)
+    return parsed.port or default
+
+
+@dataclass
+class ManagedServer:
+    name: str
+    app: object
+    port: int
+    server: uvicorn.Server | None = None
+    thread: threading.Thread | None = None
+
+    async def ensure_running(self) -> None:
+        if await is_healthy(f"http://127.0.0.1:{self.port}/health"):
+            return
+        config = uvicorn.Config(self.app, host="127.0.0.1", port=self.port, log_level="warning")
+        self.server = uvicorn.Server(config)
+        self.thread = threading.Thread(target=self.server.run, name=f"{self.name}-server", daemon=True)
+        self.thread.start()
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if await is_healthy(f"http://127.0.0.1:{self.port}/health"):
+                return
+            await asyncio.sleep(0.1)
+        raise RuntimeError(f"{self.name} did not start on port {self.port}")
+
+    def stop(self) -> None:
+        if self.server is not None:
+            self.server.should_exit = True
+        if self.thread is not None:
+            self.thread.join(timeout=5)
+
+
+async def is_healthy(url: str) -> bool:
+    try:
+        async with httpx.AsyncClient(timeout=1) as client:
+            response = await client.get(url)
+        return response.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+async def issue_user_token(client: httpx.AsyncClient, capabilities: list[str]) -> str:
     response = await client.post(
         "/identity/tokens",
         json={
-            "agent_id": actor_id,
-            "delegated_user": "user_123" if actor_type == "agent" else actor_id,
-            "actor_type": actor_type,
+            "agent_id": USER_ID,
+            "delegated_user": USER_ID,
+            "actor_type": "user",
             "capabilities": capabilities,
+            "user_capabilities": capabilities,
             "ttl_seconds": 3600,
         },
     )
@@ -63,178 +104,102 @@ async def issue_token(
     return response.json()["access_token"]
 
 
-async def root_task_call(
+async def root_task(
     client: httpx.AsyncClient,
-    token: str,
     *,
-    trace_id: str,
-    target_agent_id: str,
-    task_type: str,
-    user_task: str,
-    requested_capabilities: list[str],
-    payload: dict,
+    token: str,
+    request: RootTaskRequest,
 ) -> httpx.Response:
     return await client.post(
-        "/delegate/root-task",
-        json={
-            "trace_id": trace_id,
-            "target_agent_id": target_agent_id,
-            "task_type": task_type,
-            "user_task": user_task,
-            "requested_capabilities": requested_capabilities,
-            "payload": payload,
-        },
+        "/a2a/root-tasks",
+        json=request.model_dump(),
         headers={"Authorization": f"Bearer {token}"},
     )
-
-
-async def gateway_call(client: httpx.AsyncClient, token: str, envelope: DelegationEnvelope) -> httpx.Response:
-    return await client.post(
-        "/delegate/call",
-        json=envelope.model_dump(),
-        headers={"Authorization": f"Bearer {token}"},
-    )
-
-
-def latest_intent_node_id(trace: dict) -> str:
-    return trace["intent_tree"][-1]["node_id"]
-
-
-def first_chain_hop(trace: dict) -> DelegationHop:
-    return DelegationHop.model_validate(trace["chain"][0])
-
-
-def last_chain_hop(trace: dict) -> DelegationHop:
-    return DelegationHop.model_validate(trace["chain"][-1])
 
 
 async def main() -> None:
-    on_startup()
-    bootstrap_demo_agents()
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-        print("== Agent Registry ==")
-        print(json.dumps((await client.get("/registry/agents")).json(), ensure_ascii=False, indent=2))
+    os.environ.setdefault("BUIAM_GATEWAY_URL", GATEWAY_URL)
+    servers = [
+        ManagedServer("gateway", gateway_app, port_from_url(GATEWAY_URL, 8000)),
+        ManagedServer("doc_agent", doc_app, port_from_url(DOC_AGENT_ENDPOINT, 8011)),
+        ManagedServer("enterprise_data_agent", enterprise_app, port_from_url(ENTERPRISE_DATA_AGENT_ENDPOINT, 8012)),
+        ManagedServer("external_search_agent", external_app, port_from_url(EXTERNAL_SEARCH_AGENT_ENDPOINT, 8013)),
+    ]
+    try:
+        for server in servers:
+            await server.ensure_running()
 
-        print("\n== 正常委托：user -> doc_agent -> enterprise_data_agent ==")
-        report_trace_id = str(uuid4())
-        user_report_token = await issue_token(
-            client,
-            "user_123",
-            ["report:write", "feishu.contact:read", "feishu.wiki:read", "feishu.bitable:read", "web.public:read"],
-            actor_type="user",
-        )
-        root_report = await root_task_call(
-            client,
-            user_report_token,
-            trace_id=report_trace_id,
-            target_agent_id="doc_agent",
-            task_type="generate_report",
-            user_task="请基于企业通讯录、知识库和多维表格生成一份飞书协作报告",
-            requested_capabilities=["report:write", "feishu.contact:read", "feishu.wiki:read", "feishu.bitable:read", "web.public:read"],
-            payload={"topic": "飞书 AI 协作季度报告"},
-        )
-        print("user_123 -> doc_agent")
-        print(f"HTTP {root_report.status_code}")
-        print(json.dumps(root_report.json(), ensure_ascii=False, indent=2))
-        root_report.raise_for_status()
-        report_trace = (await client.get(f"/audit/traces/{report_trace_id}")).json()
-        doc_token = await issue_token(
-            client,
-            "doc_agent",
-            ["report:write", "feishu.contact:read", "feishu.wiki:read", "feishu.bitable:read", "web.public:read"],
-        )
-        report_response = await gateway_call(
-            client,
-            doc_token,
-            DelegationEnvelope(
-                trace_id=report_trace_id,
-                request_id=str(uuid4()),
-                caller_agent_id="doc_agent",
-                target_agent_id="enterprise_data_agent",
-                task_type="read_enterprise_data",
-                requested_capabilities=["feishu.contact:read", "feishu.wiki:read", "feishu.bitable:read"],
-                delegation_chain=[first_chain_hop(report_trace)],
-                payload={
-                    "report_topic": "飞书 AI 协作季度报告",
-                    "user_task": "请基于企业通讯录、知识库和多维表格生成一份飞书协作报告",
-                    "parent_intent_node_id": latest_intent_node_id(report_trace),
-                },
-            ),
-        )
-        print("doc_agent -> enterprise_data_agent")
-        print(f"HTTP {report_response.status_code}")
-        print(json.dumps(report_response.json(), ensure_ascii=False, indent=2))
+        async with httpx.AsyncClient(base_url=GATEWAY_URL, timeout=60) as client:
+            print("== Agent Registry ==")
+            print(json.dumps((await client.get("/registry/agents")).json(), ensure_ascii=False, indent=2))
 
-        print("\n== 越权委托：user -> doc_agent -> external_search_agent -> enterprise_data_agent ==")
-        weather_trace_id = str(uuid4())
-        user_weather_token = await issue_token(client, "user_123", ["report:write", "web.public:read"], actor_type="user")
-        weather_root = await root_task_call(
-            client,
-            user_weather_token,
-            trace_id=weather_trace_id,
-            target_agent_id="doc_agent",
-            task_type="ask_weather",
-            user_task="请检索今天的公开天气信息",
-            requested_capabilities=["report:write", "web.public:read"],
-            payload={"query": "今天的天气怎么样"},
-        )
-        print("user_123 -> doc_agent")
-        print(f"HTTP {weather_root.status_code}")
-        print(json.dumps(weather_root.json(), ensure_ascii=False, indent=2))
-        weather_root.raise_for_status()
-        weather_trace = (await client.get(f"/audit/traces/{weather_trace_id}")).json()
-        doc_search_token = await issue_token(client, "doc_agent", ["report:write", "web.public:read"])
-        external_response = await gateway_call(
-            client,
-            doc_search_token,
-            DelegationEnvelope(
-                trace_id=weather_trace_id,
-                request_id=str(uuid4()),
-                caller_agent_id="doc_agent",
-                target_agent_id="external_search_agent",
-                task_type="search_public_web",
-                requested_capabilities=["web.public:read"],
-                delegation_chain=[first_chain_hop(weather_trace)],
-                payload={
-                    "query": "今天的天气怎么样",
-                    "user_task": "请检索今天的公开天气信息",
-                    "parent_intent_node_id": latest_intent_node_id(weather_trace),
-                },
-            ),
-        )
-        print("doc_agent -> external_search_agent")
-        print(f"HTTP {external_response.status_code}")
-        print(json.dumps(external_response.json(), ensure_ascii=False, indent=2))
+            print("\n== Normal Chain: user -> doc_agent -> enterprise_data_agent ==")
+            normal_trace_id = str(uuid4())
+            normal_token = await issue_user_token(client, ALL_CAPABILITIES)
+            normal_response = await root_task(
+                client,
+                token=normal_token,
+                request=RootTaskRequest(
+                    trace_id=normal_trace_id,
+                    target_agent_id="doc_agent",
+                    task_type="generate_report",
+                    user_task="Generate a Feishu collaboration report from enterprise data.",
+                    requested_capabilities=ALL_CAPABILITIES,
+                    payload={"topic": "A2A Delegation Demo Report"},
+                ),
+            )
+            print(f"HTTP {normal_response.status_code}")
+            print(json.dumps(normal_response.json(), ensure_ascii=False, indent=2))
+            normal_response.raise_for_status()
 
-        weather_trace = (await client.get(f"/audit/traces/{weather_trace_id}")).json()
-        external_token = await issue_token(client, "external_search_agent", ["web.public:read"])
-        denied_response = await gateway_call(
-            client,
-            external_token,
-            DelegationEnvelope(
-                trace_id=weather_trace_id,
-                request_id=str(uuid4()),
-                caller_agent_id="external_search_agent",
-                target_agent_id="enterprise_data_agent",
-                task_type="read_enterprise_data",
-                requested_capabilities=["feishu.contact:read", "feishu.wiki:read", "feishu.bitable:read"],
-                delegation_chain=[first_chain_hop(weather_trace), last_chain_hop(weather_trace)],
-                payload={
-                    "reason": "external agent tries to read enterprise data after web search",
-                    "user_task": "请检索今天的公开天气信息",
-                    "parent_intent_node_id": latest_intent_node_id(weather_trace),
-                },
-            ),
-        )
-        print("external_search_agent -> enterprise_data_agent")
-        print(f"HTTP {denied_response.status_code}")
-        print(json.dumps(denied_response.json(), ensure_ascii=False, indent=2))
+            print("\n== Denied Chain: user -> external_search_agent -> enterprise_data_agent ==")
+            denied_trace_id = str(uuid4())
+            denied_token = await issue_user_token(client, ["web.public:read"])
+            denied_response = await root_task(
+                client,
+                token=denied_token,
+                request=RootTaskRequest(
+                    trace_id=denied_trace_id,
+                    target_agent_id="external_search_agent",
+                    task_type="search_then_read_enterprise",
+                    user_task="Search public information, then try to read enterprise data.",
+                    requested_capabilities=["web.public:read"],
+                    payload={"query": "public Feishu weather"},
+                ),
+            )
+            print(f"HTTP {denied_response.status_code}")
+            print(json.dumps(denied_response.json(), ensure_ascii=False, indent=2))
+            denied_response.raise_for_status()
 
-        print("\n== 审计、身份验证、独立 Chain 与 Intent Tree ==")
-        for current_trace_id in [report_trace_id, weather_trace_id]:
-            trace_response = await client.get(f"/audit/traces/{current_trace_id}")
-            print(json.dumps(trace_response.json(), ensure_ascii=False, indent=2))
+            print("\n== Audit Trace Summary ==")
+            for trace_id in [normal_trace_id, denied_trace_id]:
+                trace = (await client.get(f"/audit/traces/{trace_id}")).json()
+                print(
+                    json.dumps(
+                        {
+                            "trace_id": trace_id,
+                            "audit_decisions": [
+                                {
+                                    "caller": log["caller_agent_id"],
+                                    "target": log["target_agent_id"],
+                                    "decision": log["decision"],
+                                    "reason": log["reason"],
+                                }
+                                for log in trace["logs"]
+                            ],
+                            "chain": trace["chain"],
+                            "credential_count": len(trace["delegation_credentials"]),
+                            "intent_node_count": len(trace["intent_tree"]),
+                            "auth_event_count": len(trace["auth_events"]),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+    finally:
+        if os.getenv("BUIAM_DEMO_KEEP_SERVERS", "0") != "1":
+            for server in reversed(servers):
+                server.stop()
 
 
 if __name__ == "__main__":

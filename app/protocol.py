@@ -120,11 +120,6 @@ class DelegationEnvelope(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
-class AgentTaskRequest(BaseModel):
-    task_type: str
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
 class AgentTaskResponse(BaseModel):
     agent_id: str
     trace_id: str
@@ -212,13 +207,6 @@ class AuthEvent(BaseModel):
     error_code: str | None = None
     reason: str
     created_at: str
-
-
-class AgentRegistrationRequest(BaseModel):
-    agent_id: str
-    name: str
-    endpoint: str
-    static_capabilities: list[str] = Field(default_factory=list)
 
 
 class TokenIssueRequest(BaseModel):

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
 
-DB_PATH = Path("data/audit.db")
+DB_PATH = Path(os.getenv("BUIAM_DB_PATH", "data/audit.db"))
 
 
 def connect(db_path: Path = DB_PATH) -> sqlite3.Connection:
@@ -38,6 +39,14 @@ def init_schema(db_path: Path = DB_PATH) -> None:
             )
             """
         )
+        ensure_column(connection, "agents", "agent_type", "agent_type TEXT NOT NULL DEFAULT 'other'")
+        ensure_column(connection, "agents", "description", "description TEXT NOT NULL DEFAULT ''")
+        ensure_column(connection, "agents", "owner_org", "owner_org TEXT NOT NULL DEFAULT 'local'")
+        ensure_column(connection, "agents", "allowed_resource_domains", "allowed_resource_domains TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(connection, "agents", "status", "status TEXT NOT NULL DEFAULT 'active'")
+        ensure_column(connection, "agents", "created_at", "created_at TEXT NOT NULL DEFAULT ''")
+        ensure_column(connection, "agents", "updated_at", "updated_at TEXT NOT NULL DEFAULT ''")
+        ensure_column(connection, "agents", "last_seen_at", "last_seen_at TEXT")
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS tokens (

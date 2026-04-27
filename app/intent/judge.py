@@ -34,7 +34,7 @@ async def judge_intent(
     task_type: str,
     target_agent_id: str,
 ) -> IntentJudgeResult:
-    provider = os.getenv("INTENT_JUDGE_PROVIDER", os.getenv("LLM_PROVIDER", "openai")).lower()
+    provider = os.getenv("INTENT_JUDGE_PROVIDER", os.getenv("LLM_PROVIDER", "mock")).lower()
     user_payload = json.dumps(
         {
             "root_intent": root_intent,
@@ -45,6 +45,11 @@ async def judge_intent(
         },
         ensure_ascii=False,
     )
+    if provider in {"mock", "demo"}:
+        return IntentJudgeResult(
+            decision="Consistent",
+            reason="Deterministic demo judge accepted the child intent.",
+        )
     if provider == "anthropic":
         raw = await call_anthropic(load_prompt(), user_payload)
     elif provider == "openai":

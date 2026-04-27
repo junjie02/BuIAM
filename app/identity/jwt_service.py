@@ -18,7 +18,8 @@ from app.store.tokens import get_token, mark_jti_seen, store_token
 
 
 ISSUER = "buiam.local"
-AUDIENCE = "buiam.agents"
+AUDIENCE = "buiam.a2a"
+SIGNATURE_ALG = "BUIAM-RS256"
 
 
 class TokenError(Exception):
@@ -54,24 +55,6 @@ class TokenVerificationResult:
         return self.auth_context is not None and self.error_code is None
 
 
-def _b64url(data: bytes) -> str:
-    return b64url_encode(data)
-
-
-def _b64url_decode(data: str) -> bytes:
-    return b64url_decode(data)
-
-
-def _json_b64(payload: dict) -> str:
-    return _b64url(json.dumps(payload, separators=(",", ":")).encode())
-
-
-def token_fingerprint(token: str | None) -> str | None:
-    if not token:
-        return None
-    return hashlib.sha256(token.encode()).hexdigest()
-
-
 def issue_token(
     *,
     agent_id: str,
@@ -82,10 +65,10 @@ def issue_token(
     ttl_seconds: int = 3600,
 ) -> dict:
     now = int(time.time())
-    exp = now + ttl_seconds
+    exp = now + max(1, ttl_seconds)
     jti = f"tok_{uuid4()}"
     stored_user_capabilities = capabilities if user_capabilities is None else user_capabilities
-    header = {"alg": "BUIAM-RS256", "typ": "JWT", "kid": agent_id}
+    header = {"alg": SIGNATURE_ALG, "typ": "JWT", "kid": agent_id}
     claims = {
         "jti": jti,
         "iss": ISSUER,
@@ -94,19 +77,20 @@ def issue_token(
         "agent_id": agent_id,
         "actor_type": actor_type,
         "delegated_user": delegated_user,
-        "capabilities": capabilities,
-        "user_capabilities": stored_user_capabilities,
+        "capabilities": sorted(capabilities),
+        "user_capabilities": sorted(stored_user_capabilities),
         "iat": now,
         "exp": exp,
     }
-    signing_input = f"{_json_b64(header)}.{_json_b64(claims)}"
+    signing_input = f"{json_b64(header)}.{json_b64(claims)}"
     token = f"{signing_input}.{rsa_sign(signing_input, agent_id)}"
+
     root_credential = build_delegation_credential(
         issuer_id=agent_id,
         subject_id=agent_id,
         delegated_user=delegated_user,
-        capabilities=capabilities,
-        user_capabilities=stored_user_capabilities,
+        capabilities=sorted(capabilities),
+        user_capabilities=sorted(stored_user_capabilities),
         exp=exp,
         parent=None,
         trace_id=None,
@@ -120,8 +104,8 @@ def issue_token(
         agent_id=agent_id,
         actor_type=actor_type,
         delegated_user=delegated_user,
-        capabilities=capabilities,
-        user_capabilities=stored_user_capabilities,
+        capabilities=sorted(capabilities),
+        user_capabilities=sorted(stored_user_capabilities),
         exp=exp,
         credential_id=root_credential.credential_id,
     )
@@ -147,9 +131,10 @@ def inspect_token(token: str) -> TokenVerificationResult:
     claims: dict = {}
     try:
         header_part, claims_part, signature = token.split(".")
-        header = json.loads(_b64url_decode(header_part))
-        claims = json.loads(_b64url_decode(claims_part))
-        if header.get("alg") != "BUIAM-RS256" or header.get("kid") != SYSTEM_KEY_ID:
+        header = json.loads(b64url_decode(header_part))
+        claims = json.loads(b64url_decode(claims_part))
+        key_id = str(header.get("kid", ""))
+        if header.get("alg") != SIGNATURE_ALG or not key_id:
             return failed_token_result(
                 token_fingerprint=fingerprint,
                 verified_at=verified_at,
@@ -158,7 +143,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
                 message="invalid token header",
             )
         signing_input = f"{header_part}.{claims_part}"
-        if not rsa_verify(signing_input, signature, agent_id):
+        if not rsa_verify(signing_input, signature, key_id):
             return failed_token_result(
                 token_fingerprint=fingerprint,
                 verified_at=verified_at,
@@ -167,8 +152,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
                 message="token signature verification failed",
                 signature_valid=False,
             )
-        issuer_valid = claims.get("iss") == ISSUER
-        if not issuer_valid:
+        if claims.get("iss") != ISSUER:
             return failed_token_result(
                 token_fingerprint=fingerprint,
                 verified_at=verified_at,
@@ -178,8 +162,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
                 signature_valid=True,
                 issuer_valid=False,
             )
-        audience_valid = claims.get("aud") == AUDIENCE
-        if not audience_valid:
+        if claims.get("aud") != AUDIENCE:
             return failed_token_result(
                 token_fingerprint=fingerprint,
                 verified_at=verified_at,
@@ -190,7 +173,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
                 issuer_valid=True,
                 audience_valid=False,
             )
-        if int(claims.get("exp", 0)) < verified_at:
+        if int(claims.get("exp", 0)) <= verified_at:
             return failed_token_result(
                 token_fingerprint=fingerprint,
                 verified_at=verified_at,
@@ -211,7 +194,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
             message="token verification failed",
         )
 
-    stored = get_token(str(claims["jti"]))
+    stored = get_token(str(claims.get("jti", "")))
     if stored is None:
         return failed_token_result(
             token_fingerprint=fingerprint,
@@ -255,6 +238,7 @@ def inspect_token(token: str) -> TokenVerificationResult:
             is_expired=False,
             is_jti_registered=True,
         )
+
     if root_credential is not None:
         if not verify_credential_integrity(root_credential):
             return failed_token_result(
@@ -293,12 +277,13 @@ def inspect_token(token: str) -> TokenVerificationResult:
             jti=stored.jti,
             sub=stored.sub,
             exp=stored.exp,
-            delegated_user=stored.delegated_user,
             agent_id=stored.agent_id,
             actor_type=stored.actor_type,
+            delegated_user=stored.delegated_user,
             capabilities=stored.capabilities,
             user_capabilities=stored.user_capabilities,
         )
+
     return TokenVerificationResult(
         auth_context=auth_context,
         error_code=None,
@@ -319,6 +304,16 @@ def inspect_token(token: str) -> TokenVerificationResult:
         issuer_valid=True,
         audience_valid=True,
     )
+
+
+def json_b64(payload: dict) -> str:
+    return b64url_encode(json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode())
+
+
+def token_fingerprint(token: str | None) -> str | None:
+    if not token:
+        return None
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def failed_token_result(

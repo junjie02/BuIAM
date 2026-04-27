@@ -53,7 +53,7 @@ async def validate_and_record_intent_node(
 ) -> IntentValidationResult:
     validate_node_hash_and_signature(node)
     validate_actor(node, auth_context)
-    root_node, parent_node = validate_branch(node)
+    root_node, parent_node = validate_branch(node, trace_id=trace_id)
     try:
         judge_result = await judge_intent(
             root_intent=root_node.intent_commitment.intent,
@@ -116,13 +116,15 @@ def validate_actor(node: IntentNode, auth_context: AuthContext) -> None:
         raise IntentValidationError("INTENT_ACTOR_MISMATCH", "child intent must be signed by caller agent")
 
 
-def validate_branch(node: IntentNode) -> tuple[IntentNode, IntentNode]:
+def validate_branch(node: IntentNode, *, trace_id: str | None = None) -> tuple[IntentNode, IntentNode]:
     if node.parent_node_id is None:
         return node, node
 
     parent_row = get_intent_node(node.parent_node_id)
     if parent_row is None:
         raise IntentValidationError("INTENT_PARENT_NOT_FOUND", "parent intent node does not exist")
+    if trace_id is not None and parent_row["trace_id"] != trace_id:
+        raise IntentValidationError("INTENT_CHAIN_INVALID", "parent intent belongs to a different trace")
     parent_node = row_to_intent_node(parent_row)
     validate_node_hash_and_signature(parent_node)
     if parent_row["content_hash"] != content_hash(parent_node):
@@ -138,6 +140,8 @@ def validate_branch(node: IntentNode) -> tuple[IntentNode, IntentNode]:
         next_row = get_intent_node(current_node.parent_node_id)
         if next_row is None:
             raise IntentValidationError("INTENT_CHAIN_INVALID", "intent branch is missing an ancestor")
+        if trace_id is not None and next_row["trace_id"] != trace_id:
+            raise IntentValidationError("INTENT_CHAIN_INVALID", "intent ancestor belongs to a different trace")
         next_node = row_to_intent_node(next_row)
         validate_node_hash_and_signature(next_node)
         current_row = next_row

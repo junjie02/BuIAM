@@ -271,7 +271,7 @@ class DelegationService:
                 "AUTH_CREDENTIAL_REVOKED" if current else "AUTH_PARENT_CREDENTIAL_REVOKED",
                 "delegation credential has been revoked",
             )
-        if credential.exp < now:
+        if credential.exp <= now:
             raise CredentialValidationError(
                 "AUTH_CREDENTIAL_EXPIRED" if current else "AUTH_PARENT_CREDENTIAL_EXPIRED",
                 "delegation credential has expired",
@@ -322,8 +322,10 @@ def raise_for_denied(decision: DelegationDecision) -> None:
             status_code=403,
             detail={
                 "error": "delegation_denied",
+                "error_code": "AUTH_DELEGATION_DENIED",
                 "reason": decision.reason,
                 "effective_capabilities": decision.effective_capabilities,
                 "missing_capabilities": decision.missing_capabilities,
+                "missing_by": decision.missing_by,
             },
         )
