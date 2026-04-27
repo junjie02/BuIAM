@@ -3,7 +3,7 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from app.identity.jwt_service import issue_token, verify_token, TokenError
+from app.identity.jwt_service import TokenError, issue_token, verify_token
 from app.identity.keys import load_system_public_key
 from app.store.registry import get_agent
 from app.store.tokens import revoke_token, batch_revoke_tokens_by_agent, cleanup_expired_tokens
@@ -41,7 +41,6 @@ def create_token(request: TokenIssueRequest, fastapi_request: Request) -> dict:
     
     return issue_token(
         agent_id=request.agent_id,
-        role=request.role,
         delegated_user=request.delegated_user,
         task_id=request.task_id,
         scope=request.scope,
@@ -62,37 +61,26 @@ def introspect_token(request: TokenIntrospectRequest) -> dict:
         return {
             "active": True,
             "agent_id": auth_context.agent_id,
-            "role": auth_context.role,
+            "actor_type": auth_context.actor_type,
             "delegated_user": auth_context.delegated_user,
-            "task_id": auth_context.task_id,
-            "scope": auth_context.scope,
-            "source_agent": auth_context.source_agent,
-            "target_agent": auth_context.target_agent,
-            "delegation_depth": auth_context.delegation_depth,
+            "capabilities": auth_context.capabilities,
             "exp": auth_context.exp,
-            "jti": auth_context.jti
+            "jti": auth_context.jti,
         }
-    except TokenError as e:
-        return {
-            "active": False,
-            "error_code": e.error_code,
-            "message": e.message
-        }
+    except TokenError as error:
+        return {"active": False, "error_code": error.error_code, "message": error.message}
 
 
 @router.get("/public-key")
 def get_public_key() -> dict:
     pub_key = load_system_public_key()
-    return {
-        "kty": pub_key["kty"],
-        "n": pub_key["n"],
-        "e": pub_key["e"]
-    }
+    return {"kty": pub_key["kty"], "n": pub_key["n"], "e": pub_key["e"]}
 
 
 @router.post("/tokens/{jti}/revoke")
-def revoke(jti: str) -> dict:
-    revoked = revoke_token(jti)
+def revoke(jti: str, request: TokenRevokeRequest | None = Body(default=None)) -> dict:
+    reason = request.reason if request is not None else "manual_revoke"
+    revoked, trace_ids = revoke_token_and_credentials(jti, reason=reason)
     if not revoked:
         raise HTTPException(status_code=404, detail={"error_code": "AUTH_TOKEN_INVALID", "message": "令牌不存在"})
     return {"jti": jti, "revoked": True}

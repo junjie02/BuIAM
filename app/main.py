@@ -11,6 +11,7 @@ from app.registry.routes import router as registry_router
 from app.store.audit import list_logs, cleanup_expired_audit_logs
 from app.store.auth_events import list_auth_events
 from app.store.chain import list_chain
+from app.store.delegation_credentials import list_credentials
 from app.store.intent_tree import get_intent_node, list_intent_tree
 from app.store.schema import init_schema
 from app.store.tokens import cleanup_expired_tokens
@@ -91,6 +92,9 @@ def audit_trace(trace_id: str):
         "trace_id": trace_id,
         "logs": list_logs(trace_id=trace_id),
         "chain": list_chain(trace_id),
+        "delegation_credentials": [
+            credential.model_dump() for credential in list_credentials(trace_id=trace_id)
+        ],
         "auth_events": list_auth_events(trace_id=trace_id),
         "intent_tree": list_intent_tree(trace_id),
     }
@@ -99,6 +103,16 @@ def audit_trace(trace_id: str):
 @app.get("/audit/traces/{trace_id}/chain")
 def audit_trace_chain(trace_id: str):
     return {"trace_id": trace_id, "delegation_chain": list_chain(trace_id)}
+
+
+@app.get("/audit/traces/{trace_id}/credentials")
+def audit_trace_credentials(trace_id: str):
+    return {
+        "trace_id": trace_id,
+        "delegation_credentials": [
+            credential.model_dump() for credential in list_credentials(trace_id=trace_id)
+        ],
+    }
 
 
 @app.get("/audit/traces/{trace_id}/intent-tree")

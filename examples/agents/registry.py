@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from app.protocol import AgentTaskResponse, DelegationEnvelope
-from examples.agents import doc_agent, enterprise_data_agent, external_search_agent
+from example.agent import doc_agent, enterprise_data_agent
+from examples.agents import external_search_agent
 
 
 AgentHandler = Callable[[DelegationEnvelope], Awaitable[AgentTaskResponse]]
