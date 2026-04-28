@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from app.protocol import AgentTaskResponse, DelegationEnvelope
 from app.sdk.client import A2AClient
-from examples.agent.demo_provider import render_report, write_mock_document
+from examples.agent.demo_provider import render_report
+from examples.agent.provider import ProviderError, write_document
 
 
 AGENT_ID = "doc_agent"
@@ -34,14 +35,24 @@ async def handle_task(envelope: DelegationEnvelope) -> AgentTaskResponse:
         parent_intent_node_id=envelope.intent_node.node_id if envelope.intent_node else None,
         payload={"report_topic": topic, "user_task": user_task},
     )
+    if "error_code" in enterprise.result:
+        return AgentTaskResponse(
+            agent_id=AGENT_ID,
+            trace_id=envelope.trace_id,
+            task_type=envelope.task_type,
+            result={"error_code": enterprise.result["error_code"], "message": enterprise.result.get("message", "")},
+        )
     content = render_report(topic=topic, enterprise_data=enterprise.result)
-    document = write_mock_document(title=topic, content=content, trace_id=envelope.trace_id)
+    try:
+        document = await write_document(title=topic, content=content, trace_id=envelope.trace_id)
+    except ProviderError as exc:
+        return provider_error(envelope, exc)
     return AgentTaskResponse(
         agent_id=AGENT_ID,
         trace_id=envelope.trace_id,
         task_type=envelope.task_type,
         result={
-            "message": "mock report generated and written",
+            "message": f"{document['provider']} report generated and written",
             "document": document,
             "enterprise_data": enterprise.result,
             "report_preview": content[:800],
@@ -87,4 +98,13 @@ def unsupported(envelope: DelegationEnvelope) -> AgentTaskResponse:
         trace_id=envelope.trace_id,
         task_type=envelope.task_type,
         result={"error_code": "UNSUPPORTED_TASK", "message": f"unsupported task_type: {envelope.task_type}"},
+    )
+
+
+def provider_error(envelope: DelegationEnvelope, error: ProviderError) -> AgentTaskResponse:
+    return AgentTaskResponse(
+        agent_id=AGENT_ID,
+        trace_id=envelope.trace_id,
+        task_type=envelope.task_type,
+        result={"error_code": error.code, "message": error.message},
     )

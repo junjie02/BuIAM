@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from app.protocol import AgentTaskResponse, DelegationEnvelope
-from examples.agent.demo_provider import enterprise_snapshot
+from examples.agent.provider import ProviderError, enterprise_snapshot
 
 
 AGENT_ID = "enterprise_data_agent"
@@ -16,12 +16,12 @@ async def handle_task(envelope: DelegationEnvelope) -> AgentTaskResponse:
         return unsupported(envelope)
 
     topic = str(envelope.payload.get("report_topic", envelope.payload.get("topic", "Demo enterprise report")))
-    return AgentTaskResponse(
-        agent_id=AGENT_ID,
-        trace_id=envelope.trace_id,
-        task_type=envelope.task_type,
-        result=enterprise_snapshot(topic),
-    )
+    user_task = str(envelope.payload.get("user_task", topic))
+    try:
+        result = await enterprise_snapshot(topic=topic, user_task=user_task, trace_id=envelope.trace_id)
+    except ProviderError as exc:
+        return provider_error(envelope, exc)
+    return AgentTaskResponse(agent_id=AGENT_ID, trace_id=envelope.trace_id, task_type=envelope.task_type, result=result)
 
 
 async def sleep_task(envelope: DelegationEnvelope) -> AgentTaskResponse:
@@ -41,4 +41,13 @@ def unsupported(envelope: DelegationEnvelope) -> AgentTaskResponse:
         trace_id=envelope.trace_id,
         task_type=envelope.task_type,
         result={"error_code": "UNSUPPORTED_TASK", "message": f"unsupported task_type: {envelope.task_type}"},
+    )
+
+
+def provider_error(envelope: DelegationEnvelope, error: ProviderError) -> AgentTaskResponse:
+    return AgentTaskResponse(
+        agent_id=AGENT_ID,
+        trace_id=envelope.trace_id,
+        task_type=envelope.task_type,
+        result={"error_code": error.code, "message": error.message},
     )
