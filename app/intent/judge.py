@@ -64,20 +64,27 @@ async def call_openai(system_prompt: str, user_payload: str) -> str:
     if not api_key:
         raise IntentJudgeError("OPENAI_API_KEY is not configured")
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    request_body = {
+        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_payload},
+        ],
+    }
+    response_format = os.getenv("OPENAI_RESPONSE_FORMAT", "").strip()
+    if response_format:
+        request_body["response_format"] = {"type": response_format}
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
             f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_payload},
-                ],
-                "response_format": {"type": "json_object"},
-            },
+            json=request_body,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            detail = response.text[:1000]
+            raise IntentJudgeError(f"OpenAI-compatible intent judge request failed: {error}; body={detail}") from error
         return response.json()["choices"][0]["message"]["content"]
 
 
@@ -97,7 +104,11 @@ async def call_anthropic(system_prompt: str, user_payload: str) -> str:
                 "messages": [{"role": "user", "content": user_payload}],
             },
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as error:
+            detail = response.text[:1000]
+            raise IntentJudgeError(f"Anthropic intent judge request failed: {error}; body={detail}") from error
         content = response.json()["content"]
         return "".join(block.get("text", "") for block in content)
 
