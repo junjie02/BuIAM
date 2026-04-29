@@ -150,7 +150,6 @@ async def main() -> None:
             )
             print(f"HTTP {normal_response.status_code}")
             print(json.dumps(normal_response.json(), ensure_ascii=False, indent=2))
-            normal_response.raise_for_status()
 
             print("\n== Denied Chain: user -> external_search_agent -> enterprise_data_agent ==")
             denied_trace_id = str(uuid4())
@@ -169,7 +168,6 @@ async def main() -> None:
             )
             print(f"HTTP {denied_response.status_code}")
             print(json.dumps(denied_response.json(), ensure_ascii=False, indent=2))
-            denied_response.raise_for_status()
 
             print("\n== Audit Trace Summary ==")
             for trace_id in [normal_trace_id, denied_trace_id]:
@@ -196,6 +194,13 @@ async def main() -> None:
                         indent=2,
                     )
                 )
+
+            if os.getenv("BUIAM_DEMO_KEEP_SERVERS", "0") == "1":
+                print("\nBUIAM_DEMO_KEEP_SERVERS=1; services are still running.")
+                print(f"Gateway: {GATEWAY_URL}")
+                print("Press Ctrl+C to stop this demo process.")
+                while True:
+                    await asyncio.sleep(3600)
     finally:
         if os.getenv("BUIAM_DEMO_KEEP_SERVERS", "0") != "1":
             for server in reversed(servers):
