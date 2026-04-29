@@ -132,3 +132,33 @@ python scripts/security/run_all_security_checks.py
 ```bash
 python scripts/security/run_all_security_checks.py
 ```
+
+## lark-cli Provider Integration
+
+The Gateway security chain is unchanged. Real Feishu access is attached only at
+the demo Agent provider layer.
+
+Enable the real provider by setting:
+
+```bash
+set BUIAM_AGENT_PROVIDER_MODE=lark_cli
+set BUIAM_LARK_CLI_AS=user
+set BUIAM_LARK_CLI_BITABLE_APP_TOKEN=app_token
+set BUIAM_LARK_CLI_BITABLE_TABLE_ID=tbl_id
+```
+
+Then install and authenticate `lark-cli` on the same machine:
+
+```bash
+npm install -g @larksuiteoapi/cli
+lark-cli auth login --recommend
+```
+
+Current integration scope:
+
+- `enterprise_data_agent` reads contacts, agenda, wiki spaces, and optionally bitable records through `lark-cli`
+- `doc_agent` still composes the report locally, then creates a real Feishu doc through `lark-cli`
+- `external_search_agent` stays on the mock public-search provider
+
+If `BUIAM_AGENT_PROVIDER_MODE` is left as `mock`, all existing demo flows and
+security tests continue to use the deterministic mock providers.
