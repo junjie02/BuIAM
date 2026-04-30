@@ -12,9 +12,13 @@ def known_capabilities() -> set[str]:
     return capabilities
 
 
-def parse_capabilities(raw_capabilities: Sequence[str]) -> set[str]:
+def parse_capabilities(
+    raw_capabilities: Sequence[str],
+    known: set[str] | frozenset[str] | None = None,
+) -> set[str]:
     parsed: set[str] = set(raw_capabilities)
-    unknown = parsed - known_capabilities()
+    known_set = known_capabilities() if known is None else set(known)
+    unknown = parsed - known_set
     if unknown:
         raise ValueError(f"unknown capabilities: {sorted(unknown)}")
     return parsed

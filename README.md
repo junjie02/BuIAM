@@ -1,15 +1,36 @@
-﻿# BuIAM Delegation Protocol MVP
+# BuIAM A2A 安全委托 Demo
 
-飞书校园挑战赛最小验证系统：3 个 Agent 协作，权限委托与审计由外置 Delegation Service 统一处理。
+BuIAM 是一个基于 FastAPI 的 Agent-to-Agent 安全委托演示系统。当前三个业务 Agent 的执行动作仍然使用可控的 mock provider，因此不需要真实飞书 API 配置也能跑通；但安全链路是真实实现：JWT 验证、签名化委托凭证、意图链校验、Token 吊销、过期处理、运行中任务取消和审计追踪都在 Gateway 中完成。
 
-## 架构
+## 安全约束
 
-- `doc_agent`：飞书文档助手，编排报告生成，并通过外置协议委托企业数据 Agent。
-- `enterprise_data_agent`：唯一拥有企业通讯录、知识库、多维表格 mock 访问能力的 Agent。
-- `external_search_agent`：只能访问公开网页 mock 检索能力。
-- `delegation_service`：外置安全协议层，负责能力解析、权限交集、委托链追加和 SQLite 审计。
+- 每一跳 A2A 调用都会生成 signed delegation credential，包含父子关系、root 引用、能力收缩、过期时间、哈希和签名。
+- root task 和 agent-to-agent 调用都会生成并校验 intent node，保留 intent parent/root 关系。
+- Token 吊销会级联撤销 descendant credentials，并取消受影响 trace 的进程内运行任务。
+- Token/credential 自然过期只阻止新请求、新委托和新工具访问，不主动取消已经开始的任务。
+- `delegation_chain` 只做人类可读审计摘要；真正的授权事实来源是 signed credential 链。
+- `/audit/traces/{trace_id}` 可以查询 logs、delegation chain、delegation credentials、auth events、intent tree 和 decision detail。
 
-Agent 不直接做权限判定；Agent 间调用必须走 `POST /delegate/call`。
+## 运行结构
+
+```text
+Gateway:               http://127.0.0.1:8000
+doc_agent:             http://127.0.0.1:8011/a2a/tasks
+enterprise_data_agent: http://127.0.0.1:8012/a2a/tasks
+external_search_agent: http://127.0.0.1:8013/a2a/tasks
+```
+
+用户发起任务：
+
+```text
+POST /a2a/root-tasks
+```
+
+Agent 之间发送普通 A2A task 请求，统一由 Gateway 拦截、鉴权、授权、生成下一跳 credential/intent，并转发：
+
+```text
+POST /a2a/agents/{target_agent_id}/tasks
+```
 
 ## 快速开始
 
@@ -17,164 +38,127 @@ Agent 不直接做权限判定；Agent 间调用必须走 `POST /delegate/call`�
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
-
-另开终端运行演示：
-
-```bash
 python scripts/demo.py
 ```
 
-也可以不启动服务，直接运行测试：
+`scripts/demo.py` 会在本机端口没有服务时自动启动 Gateway 和三个 demo Agent，然后执行：
+
+- 正常链路：`user -> doc_agent -> enterprise_data_agent`
+- 越权链路：`user -> external_search_agent -> enterprise_data_agent`
+- 两条 trace 的审计摘要
+
+如果希望 demo 结束后保留服务进程：
 
 ```bash
-pytest
+set BUIAM_DEMO_KEEP_SERVERS=1
+python scripts/demo.py
 ```
 
-## LLM 配置
+## 手动启动
 
-默认使用 mock LLM，保证无 Key 可复现。
+也可以打开四个终端分别启动：
 
 ```bash
-set LLM_PROVIDER=mock
-set LLM_PROVIDER=openai
-set OPENAI_API_KEY=你的_KEY
-set LLM_PROVIDER=anthropic
-set ANTHROPIC_API_KEY=你的_KEY
+uvicorn app.main:app --port 8000
+uvicorn examples.agent.doc_service:app --port 8011
+uvicorn examples.agent.enterprise_data_service:app --port 8012
+uvicorn examples.agent.external_search_service:app --port 8013
 ```
 
-## 核心协议
+Gateway 启动时会自动注册三个 demo Agent。也可以手动执行：
 
-统一请求 Envelope 字段：
-
-- `trace_id`：完整任务链路 ID。
-- `request_id`：当前请求 ID。
-- `caller_agent_id`：调用方 Agent。
-- `target_agent_id`：目标 Agent。
-- `task_type`：任务类型。
-- `requested_capabilities`：本次请求需要的能力集合。
-- `delegation_chain`：从用户到当前 Agent 的链路。
-- `payload`：业务参数。
-
-最小 Capability：
-
-- `report:write`
-- `feishu.contact:read`
-- `feishu.wiki:read`
-- `feishu.bitable:read`
-- `web.public:read`
-
-授权规则：
-
-```text
-effective_capabilities = caller_delegatable ∩ target_static ∩ requested
+```bash
+python scripts/bootstrap_demo_agents.py
 ```
 
-若 `effective_capabilities` 覆盖全部请求能力，则允许；否则拒绝并写审计日志。
+## Demo Agent
 
-## API
+- `doc_agent`：编排报告生成，委托企业数据读取，并写入 mock 飞书文档。
+- `enterprise_data_agent`：返回 mock 通讯录、日历、知识库信号和多维表格记录。
+- `external_search_agent`：返回 mock 公网搜索结果，并用于演示越权读取企业数据被拒绝。
 
-- `GET /health`：健康检查。
-- `POST /delegate/call`：唯一 Agent 间授权调用入口。
-- `GET /audit/logs`：查看全部审计日志。
-- `GET /audit/traces/{trace_id}`：查看指定调用链。
+mock 行为集中在 `examples/agent/demo_provider.py`。后续接入真实飞书 OpenAPI 时，优先替换 provider 层，不需要改 Gateway 的安全链路。
 
-## 验收流程
+## 常用 API
 
-1. 正常委托：`doc_agent` 生成报告，委托 `enterprise_data_agent` 读取企业数据，返回报告。
-2. 越权拦截：`external_search_agent` 尝试委托 `enterprise_data_agent` 读取企业数据，返回 `403 delegation_denied`。
-3. 审计追踪：访问 `/audit/logs` 或 `/audit/traces/{trace_id}` 查看 allow/deny 决策上下文。
+- `GET /health`
+- `GET /registry/agents`
+- `POST /identity/tokens`
+- `POST /identity/tokens/{jti}/revoke`
+- `POST /a2a/root-tasks`
+- `POST /a2a/agents/{target_agent_id}/tasks`
+- `GET /audit/logs`
+- `GET /audit/auth-events`
+- `GET /audit/traces/{trace_id}`
 
-## 后续扩展点
+## 自动化测试
 
-- 在 `delegation_service` 替换真实外置安全模型。
-- 增加 JWT、签名验签、Token 撤销、策略 DSL、Prompt Injection 防护。
-- 将单进程路由拆分成多服务部署，Agent 业务代码无需改变。
-
-## Mock 前置认证闭环
-
-当前 `DelegationEnvelope` 会携带 `auth_context`，模拟前置 Agent 身份认证与授权结果：
-
-```json
-{
-  "jti": "tok_001",
-  "sub": "doc_agent",
-  "exp": 9999999999,
-  "delegated_user": "user_123",
-  "agent_id": "doc_agent",
-  "capabilities": ["feishu.contact:read"],
-  "sig": null
-}
+```bash
+.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
 ```
 
-外置 `DelegationService` 的最小授权算法已升级为：
+测试覆盖：
 
-```text
-effective = caller_token_caps ∩ target_agent_caps ∩ requested_caps ∩ user_caps
+- 正常委托链、意图链和审计落库。
+- 越权委托、能力收缩和 `missing_by`。
+- credential 篡改、跨 trace credential 复用、parent/root 连续性。
+- intent 篡改、签名错误、parent 丢失、actor mismatch、intent drift、跨 trace parent intent。
+- Token 签发、过期、吊销、级联撤销和运行中 sleep task 取消。
+- A2A Bearer 缺失、伪造、主体不一致、user token 冒充 agent、未知 target agent。
+- 不可抵赖：credential issuer 签名和 intent actor 签名可用对应公钥验证。
+
+## 人工安全验证脚本
+
+脚本位于 `scripts/security/`，默认会启动或复用本机 Gateway 与三个 Agent。业务动作仍然是 mock，安全校验是真实链路。
+
+```bash
+python scripts/security/verify_delegation_chain.py
+python scripts/security/verify_intent_chain.py
+python scripts/security/find_security_node.py
+python scripts/security/verify_chain_binding.py
+python scripts/security/verify_token_lifecycle.py
+python scripts/security/verify_a2a_identity.py
+python scripts/security/run_all_security_checks.py
 ```
 
-同时会做这些 mock 校验：
+通用参数：
 
-- `jti` 是否在内存黑名单 `blacklist` 中。
-- token 来源校验占位 `verify_token_source()`，当前直接返回 `true`。
-- 伪签名校验 `verify_sig()`，缺少 `sig` 时兼容 mock 根请求。
-- 委托链连续性检查：最后一跳 `to_agent_id` 必须等于当前 `caller_agent_id`。
-- 授权通过后追加 `DelegationHop`，并将下一跳 `auth_context.capabilities` 收缩为 `effective_capabilities`。
+- `--keep-db`：保留 `data/audit.db`，不在脚本开始时清空。
+- `--trace-id <id>`：指定 trace id，便于复现实验。
+- `--json`：输出 JSON，方便验收或接入 CI。
 
-当前 Agent Registry、Token、Chain、Audit 均由 SQLite 存储；示例 Agent 的注册逻辑只存在于 `scripts/demo.py`。
+推荐一键验证：
 
-### DelegationHop 与 DecisionDetail
-
-`delegation_chain` 只保留轻量、人类友好的链路：
-
-- `from_actor` / `to_agent_id`：这一跳从谁到谁。
-- `task_type`：这一跳要执行的任务。
-- `delegated_capabilities`：这一跳最终委托出去的能力；拒绝时为空。
-- `missing_capabilities`：这一跳缺少的能力；拒绝时用于解释这一跳为什么失败。
-- `decision`：`root/allow/deny`，其中 `root` 表示用户入口 mock 前置授权。
-
-完整授权复盘放在审计日志的 `decision_detail` 中，包括 `requested_capabilities`、`caller_token_capabilities`、`target_agent_capabilities`、`user_capabilities`、`effective_capabilities`、`missing_capabilities`、`missing_by`、`decision` 和 `reason`。
-
-## 即插即用服务化结构
-
-当前代码已拆成两层：
-
-- `app/`：BuIAM 安全服务核心，只放 Identity、Registry、Gateway、Delegation、Audit、SDK、Store、Protocol。
-- `examples/`：示例 Agent、mock tools 与 LLM 适配器，不属于安全服务核心。
-
-唯一允许安全服务引用示例 Agent 的地方是 `app/gateway/local_adapter.py`，用于支持 `local://agent_id` demo endpoint。真实接入时，外部 Agent 应注册 HTTP endpoint。
-
-### 核心接口
-
-- `POST /registry/agents`：注册 Agent 的 `agent_id/name/endpoint/static_capabilities`。
-- `GET /registry/agents`：查看 Agent 注册表。
-- `POST /identity/tokens`：使用 `data/keys/{agent_id}_private.pem` 签发开发版 RSA JWT。
-- `POST /identity/tokens/{jti}/revoke`：吊销 token。
-- `POST /delegate/call`：Gateway 统一入口，必须带 `Authorization: Bearer <token>`。
-- `GET /audit/logs`：查询审计日志。
-- `GET /audit/traces/{trace_id}`：查询审计日志与独立 chain。
-- `GET /audit/traces/{trace_id}/chain`：只查询 delegation chain。
-
-### RSA Key
-
-启动时会为当前三个 demo Agent 准备 key 文件：
-
-```text
-data/keys/doc_agent_private.pem
-data/keys/doc_agent_public.pem
-data/keys/enterprise_data_agent_private.pem
-data/keys/enterprise_data_agent_public.pem
-data/keys/external_search_agent_private.pem
-data/keys/external_search_agent_public.pem
+```bash
+python scripts/security/run_all_security_checks.py
 ```
 
-这些 key 是开发演示用，已被 `.gitignore` 忽略。
+## lark-cli Provider Integration
 
-### 外部 Agent 接入流程
+The Gateway security chain is unchanged. Real Feishu access is attached only at
+the demo Agent provider layer.
 
-1. 启动 BuIAM 服务。
-2. 调 `POST /registry/agents` 注册 Agent endpoint。
-3. 调 `POST /identity/tokens` 为调用方 Agent 签发 token。
-4. Agent 调用其它 Agent 时统一请求 `POST /delegate/call`。
-5. 通过 `/audit/traces/{trace_id}` 或 `/audit/traces/{trace_id}/chain` 复盘链路。
+Enable the real provider by setting:
+
+```bash
+set BUIAM_AGENT_PROVIDER_MODE=lark_cli
+set BUIAM_LARK_CLI_AS=user
+set BUIAM_LARK_CLI_BITABLE_APP_TOKEN=app_token
+set BUIAM_LARK_CLI_BITABLE_TABLE_ID=tbl_id
+```
+
+Then install and authenticate `lark-cli` on the same machine:
+
+```bash
+npm install -g @larksuiteoapi/cli
+lark-cli auth login --recommend
+```
+
+Current integration scope:
+
+- `enterprise_data_agent` reads contacts, agenda, wiki spaces, and optionally bitable records through `lark-cli`
+- `doc_agent` still composes the report locally, then creates a real Feishu doc through `lark-cli`
+- `external_search_agent` stays on the mock public-search provider
+
+If `BUIAM_AGENT_PROVIDER_MODE` is left as `mock`, all existing demo flows and
+security tests continue to use the deterministic mock providers.

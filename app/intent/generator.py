@@ -39,7 +39,7 @@ async def generate_intent_commitment(
     task_type: str,
     payload: dict[str, Any],
 ) -> GeneratedIntent:
-    provider = os.getenv("INTENT_GENERATOR_PROVIDER", os.getenv("LLM_PROVIDER", "openai")).lower()
+    provider = os.getenv("INTENT_GENERATOR_PROVIDER", os.getenv("LLM_PROVIDER", "mock")).lower()
     user_payload = json.dumps(
         {
             "user_task": user_task,
@@ -51,7 +51,18 @@ async def generate_intent_commitment(
         },
         ensure_ascii=False,
     )
-    if provider == "anthropic":
+    if provider in {"mock", "demo"}:
+        model = "mock-intent-generator"
+        raw = json.dumps(
+            {
+                "intent": f"{actor_id} requests {target_agent_id} to run {task_type}: {user_task}",
+                "description": "Deterministic demo intent commitment.",
+                "data_refs": sorted(str(key) for key in payload.keys()),
+                "constraints": ["demo intent provider", "preserve delegated capability boundary"],
+            },
+            ensure_ascii=False,
+        )
+    elif provider == "anthropic":
         model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-latest")
         raw = await call_anthropic(load_prompt(), user_payload, model)
     elif provider == "openai":
@@ -71,21 +82,30 @@ async def call_openai(system_prompt: str, user_payload: str, model: str) -> str:
     if not api_key:
         raise IntentGenerationError("OPENAI_API_KEY is not configured")
     base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+    request_body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_payload},
+        ],
+    }
+    response_format = os.getenv("OPENAI_RESPONSE_FORMAT", "").strip()
+    if response_format:
+        request_body["response_format"] = {"type": response_format}
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
                 f"{base_url}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_payload},
-                    ],
-                    "response_format": {"type": "json_object"},
-                },
+                json=request_body,
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as error:
+                detail = response.text[:1000]
+                raise IntentGenerationError(
+                    f"OpenAI-compatible intent generation request failed: {error}; body={detail}"
+                ) from error
             return response.json()["choices"][0]["message"]["content"]
     except httpx.HTTPError as error:
         raise IntentGenerationError(f"OpenAI-compatible intent generation request failed: {error}") from error
@@ -108,7 +128,13 @@ async def call_anthropic(system_prompt: str, user_payload: str, model: str) -> s
                     "messages": [{"role": "user", "content": user_payload}],
                 },
             )
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as error:
+                detail = response.text[:1000]
+                raise IntentGenerationError(
+                    f"Anthropic intent generation request failed: {error}; body={detail}"
+                ) from error
             content = response.json()["content"]
             return "".join(block.get("text", "") for block in content)
     except httpx.HTTPError as error:

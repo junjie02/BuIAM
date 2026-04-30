@@ -7,7 +7,9 @@ from pydantic import BaseModel, Field
 
 Capability = Literal[
     "report:write",
+    "feishu.doc:write",
     "feishu.contact:read",
+    "feishu.calendar:read",
     "feishu.wiki:read",
     "feishu.bitable:read",
     "web.public:read",
@@ -53,6 +55,9 @@ class DecisionDetail(BaseModel):
     auth_event_recorded: bool = False
     token_jti: str | None = None
     token_agent_id: str | None = None
+    credential_id: str | None = None
+    parent_credential_id: str | None = None
+    root_credential_id: str | None = None
     intent_node_id: str | None = None
     parent_intent_node_id: str | None = None
     root_intent: str | None = None
@@ -70,17 +75,35 @@ class AuthContext(BaseModel):
     sub: str
     exp: int
     agent_id: str
-    role: str
+    actor_type: Literal["user", "agent"] = "agent"
     delegated_user: str | None = None
-    task_id: str | None = None
-    scope: list[str] = Field(default_factory=list)
-    source_agent: str | None = None
-    target_agent: str | None = None
-    source_ip: str | None = None
-    client_instance_id: str | None = None
-    delegation_depth: int = 0
     capabilities: list[str] = Field(default_factory=list)
+    user_capabilities: list[str] = Field(default_factory=list)
+    credential_id: str | None = None
+    parent_credential_id: str | None = None
+    root_credential_id: str | None = None
     sig: str | None = None
+
+
+class DelegationCredential(BaseModel):
+    credential_id: str
+    parent_credential_id: str | None = None
+    root_credential_id: str
+    issuer_id: str
+    subject_id: str
+    delegated_user: str
+    capabilities: list[str] = Field(default_factory=list)
+    user_capabilities: list[str] = Field(default_factory=list)
+    iat: int
+    exp: int
+    trace_id: str | None = None
+    request_id: str | None = None
+    content_hash: str
+    signature: str
+    signature_alg: str = "BUIAM-RS256"
+    revoked: bool = False
+    revoked_at: int | None = None
+    revoke_reason: str | None = None
 
 
 class DelegationEnvelope(BaseModel):
@@ -94,11 +117,6 @@ class DelegationEnvelope(BaseModel):
     delegation_chain: list[DelegationHop] = Field(default_factory=list)
     intent_node: IntentNode | None = None
     auth_context: AuthContext | None = None
-    payload: dict[str, Any] = Field(default_factory=dict)
-
-
-class AgentTaskRequest(BaseModel):
-    task_type: str
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -191,19 +209,17 @@ class AuthEvent(BaseModel):
     created_at: str
 
 
-class AgentRegistrationRequest(BaseModel):
-    agent_id: str
-    name: str
-    endpoint: str
-    static_capabilities: list[str] = Field(default_factory=list)
-
-
 class TokenIssueRequest(BaseModel):
     agent_id: str
     delegated_user: str = "user_123"
     actor_type: Literal["user", "agent"] = "agent"
     capabilities: list[str] = Field(default_factory=list)
+    user_capabilities: list[str] = Field(default_factory=list)
     ttl_seconds: int = 3600
+
+
+class TokenRevokeRequest(BaseModel):
+    reason: str = "manual_revoke"
 
 
 class RootTaskRequest(BaseModel):
