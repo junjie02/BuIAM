@@ -77,4 +77,3 @@ def revoke(jti: str, request: TokenRevokeRequest | None = Body(default=None)) ->
         "trace_ids": trace_ids,
         "cancelled_tasks": cancel_traces(trace_ids, "token_revoked"),
     }
-

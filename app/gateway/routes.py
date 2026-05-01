@@ -86,7 +86,7 @@ async def root_task(
     try:
         target_auth_context = delegation_service.build_child_auth_context(
             parent_auth_context=auth_context,
-            issuer_id=auth_context.agent_id,
+            issuer_id=request.target_agent_id,
             subject_id=request.target_agent_id,
             capabilities=request.requested_capabilities,
             trace_id=trace_id,

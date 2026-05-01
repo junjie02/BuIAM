@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import os
 
+from app.identity.did import build_did, build_did_document
 from app.identity.keys import ensure_agent_keypair
+from app.store.did_registry import upsert_did_document
 from app.store.registry import upsert_agent
 
-
 USER_ID = os.getenv("BUIAM_DEMO_USER_ID", "user_123")
-
 
 DEMO_AGENTS = [
     {
@@ -55,9 +55,13 @@ DEMO_AGENTS = [
 
 def register_demo_agents() -> None:
     ensure_agent_keypair(USER_ID)
+    user_doc = build_did_document(USER_ID)
+    upsert_did_document(did=build_did(USER_ID), subject_id=USER_ID, document=user_doc)
     for agent in DEMO_AGENTS:
         agent_id = str(agent["agent_id"])
         ensure_agent_keypair(agent_id)
+        did_doc = build_did_document(agent_id)
+        upsert_did_document(did=build_did(agent_id), subject_id=agent_id, document=did_doc)
         upsert_agent(
             agent_id=agent_id,
             name=str(agent["name"]),

@@ -4,7 +4,6 @@ import os
 import sqlite3
 from pathlib import Path
 
-
 DB_PATH = Path(os.getenv("BUIAM_DB_PATH", "data/audit.db"))
 
 
@@ -47,6 +46,7 @@ def init_schema(db_path: Path = DB_PATH) -> None:
         ensure_column(connection, "agents", "created_at", "created_at TEXT NOT NULL DEFAULT ''")
         ensure_column(connection, "agents", "updated_at", "updated_at TEXT NOT NULL DEFAULT ''")
         ensure_column(connection, "agents", "last_seen_at", "last_seen_at TEXT")
+
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS tokens (
@@ -73,6 +73,7 @@ def init_schema(db_path: Path = DB_PATH) -> None:
         ensure_column(connection, "tokens", "actor_type", "actor_type TEXT NOT NULL DEFAULT 'agent'")
         ensure_column(connection, "tokens", "user_capabilities", "user_capabilities TEXT NOT NULL DEFAULT '[]'")
         ensure_column(connection, "tokens", "credential_id", "credential_id TEXT")
+
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS delegation_credentials (
@@ -98,18 +99,18 @@ def init_schema(db_path: Path = DB_PATH) -> None:
             )
             """
         )
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_delegation_credentials_parent ON delegation_credentials(parent_credential_id)"
-        )
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_delegation_credentials_root ON delegation_credentials(root_credential_id)"
-        )
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_delegation_credentials_trace ON delegation_credentials(trace_id)"
-        )
-        connection.execute(
-            "CREATE INDEX IF NOT EXISTS idx_delegation_credentials_subject ON delegation_credentials(subject_id)"
-        )
+        ensure_column(connection, "delegation_credentials", "issuer_did", "issuer_did TEXT")
+        ensure_column(connection, "delegation_credentials", "subject_did", "subject_did TEXT")
+        ensure_column(connection, "delegation_credentials", "vc_context", "vc_context TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(connection, "delegation_credentials", "vc_type", "vc_type TEXT NOT NULL DEFAULT '[]'")
+        ensure_column(connection, "delegation_credentials", "credential_subject", "credential_subject TEXT NOT NULL DEFAULT '{}'")
+        ensure_column(connection, "delegation_credentials", "proof_verification_method", "proof_verification_method TEXT")
+        ensure_column(connection, "delegation_credentials", "proof_signature", "proof_signature TEXT")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_delegation_credentials_parent ON delegation_credentials(parent_credential_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_delegation_credentials_root ON delegation_credentials(root_credential_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_delegation_credentials_trace ON delegation_credentials(trace_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_delegation_credentials_subject ON delegation_credentials(subject_id)")
+
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS audit_logs (
@@ -128,18 +129,9 @@ def init_schema(db_path: Path = DB_PATH) -> None:
             )
             """
         )
-        ensure_column(
-            connection,
-            "audit_logs",
-            "decision_detail",
-            "decision_detail TEXT NOT NULL DEFAULT '{}'",
-        )
-        ensure_column(
-            connection,
-            "audit_logs",
-            "delegation_chain",
-            "delegation_chain TEXT NOT NULL DEFAULT '[]'",
-        )
+        ensure_column(connection, "audit_logs", "decision_detail", "decision_detail TEXT NOT NULL DEFAULT '{}'")
+        ensure_column(connection, "audit_logs", "delegation_chain", "delegation_chain TEXT NOT NULL DEFAULT '[]'")
+
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS delegation_chain (
@@ -157,6 +149,7 @@ def init_schema(db_path: Path = DB_PATH) -> None:
             )
             """
         )
+
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS auth_events (
@@ -186,6 +179,7 @@ def init_schema(db_path: Path = DB_PATH) -> None:
             )
             """
         )
+
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS intent_tree (
@@ -208,6 +202,18 @@ def init_schema(db_path: Path = DB_PATH) -> None:
                 judge_decision TEXT,
                 judge_reason TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS did_documents (
+                did TEXT PRIMARY KEY,
+                subject_id TEXT NOT NULL,
+                document_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
             """
         )

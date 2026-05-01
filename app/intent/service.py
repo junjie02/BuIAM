@@ -109,7 +109,8 @@ def validate_node_hash_and_signature(node: IntentNode) -> None:
 
 def validate_actor(node: IntentNode, auth_context: AuthContext) -> None:
     if node.parent_node_id is None:
-        if node.actor_type != "user" or node.actor_id != auth_context.delegated_user:
+        expected_user = auth_context.delegated_user or auth_context.agent_id
+        if node.actor_type != "user" or node.actor_id != expected_user:
             raise IntentValidationError("INTENT_ACTOR_MISMATCH", "root intent must be signed by delegated user")
         return
     if node.actor_type != "agent" or node.actor_id != auth_context.agent_id:
@@ -130,7 +131,6 @@ def validate_branch(node: IntentNode, *, trace_id: str | None = None) -> tuple[I
     if parent_row["content_hash"] != content_hash(parent_node):
         raise IntentValidationError("INTENT_CHAIN_INVALID", "parent intent content hash mismatch")
 
-    current_row = parent_row
     current_node = parent_node
     visited = {node.node_id}
     while current_node.parent_node_id is not None:
@@ -144,7 +144,6 @@ def validate_branch(node: IntentNode, *, trace_id: str | None = None) -> tuple[I
             raise IntentValidationError("INTENT_CHAIN_INVALID", "intent ancestor belongs to a different trace")
         next_node = row_to_intent_node(next_row)
         validate_node_hash_and_signature(next_node)
-        current_row = next_row
         current_node = next_node
     return current_node, parent_node
 

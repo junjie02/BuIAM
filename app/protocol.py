@@ -77,6 +77,9 @@ class AuthContext(BaseModel):
     agent_id: str
     actor_type: Literal["user", "agent"] = "agent"
     delegated_user: str | None = None
+    subject_did: str | None = None
+    agent_did: str | None = None
+    signing_kid: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     user_capabilities: list[str] = Field(default_factory=list)
     credential_id: str | None = None
@@ -91,6 +94,8 @@ class DelegationCredential(BaseModel):
     root_credential_id: str
     issuer_id: str
     subject_id: str
+    issuer_did: str | None = None
+    subject_did: str | None = None
     delegated_user: str
     capabilities: list[str] = Field(default_factory=list)
     user_capabilities: list[str] = Field(default_factory=list)
@@ -98,6 +103,11 @@ class DelegationCredential(BaseModel):
     exp: int
     trace_id: str | None = None
     request_id: str | None = None
+    vc_context: list[str] = Field(default_factory=list)
+    vc_type: list[str] = Field(default_factory=list)
+    credential_subject: dict[str, Any] = Field(default_factory=dict)
+    proof_verification_method: str | None = None
+    proof_signature: str | None = None
     content_hash: str
     signature: str
     signature_alg: str = "BUIAM-RS256"

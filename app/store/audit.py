@@ -1,7 +1,8 @@
 from __future__ import annotations
-import time
+
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -49,10 +50,7 @@ def record_decision(
 
         full_chain.append(current_hop)
 
-    chain_json = json.dumps(
-        [hop.model_dump() for hop in full_chain],
-        ensure_ascii=False,
-    )
+    chain_json = json.dumps([hop.model_dump() for hop in full_chain], ensure_ascii=False)
 
     with sqlite3.connect(db_path) as connection:
         connection.execute(
@@ -98,29 +96,6 @@ def list_logs(db_path: Path = DB_PATH, trace_id: str | None = None) -> list[Audi
         connection.row_factory = sqlite3.Row
         rows = connection.execute(query, params).fetchall()
 
-
-def cleanup_expired_audit_logs(retention_days: int = 30, db_path: Path = DB_PATH) -> int:
-    """清理超过保留期的审计日志，默认保留30天"""
-    init_db(db_path)
-    cutoff_time = time.time() - retention_days * 86400
-    cutoff_date = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(cutoff_time))
-    
-    with sqlite3.connect(db_path) as connection:
-        cursor = connection.execute(
-            "DELETE FROM audit_logs WHERE created_at < ?",
-            (cutoff_date,)
-        )
-        # 同时清理过期的授权事件和委托链记录
-        cursor.execute(
-            "DELETE FROM auth_events WHERE created_at < ?",
-            (cutoff_date,)
-        )
-        cursor.execute(
-            "DELETE FROM delegation_chain WHERE created_at < ?",
-            (cutoff_date,)
-        )
-    return cursor.rowcount
-
     return [
         AuditLog(
             id=row["id"],
@@ -139,6 +114,18 @@ def cleanup_expired_audit_logs(retention_days: int = 30, db_path: Path = DB_PATH
     ]
 
 
+def cleanup_expired_audit_logs(retention_days: int = 30, db_path: Path = DB_PATH) -> int:
+    init_db(db_path)
+    cutoff_time = time.time() - retention_days * 86400
+    cutoff_date = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(cutoff_time))
+
+    with sqlite3.connect(db_path) as connection:
+        cursor = connection.execute("DELETE FROM audit_logs WHERE created_at < ?", (cutoff_date,))
+        cursor.execute("DELETE FROM auth_events WHERE created_at < ?", (cutoff_date,))
+        cursor.execute("DELETE FROM delegation_chain WHERE created_at < ?", (cutoff_date,))
+    return cursor.rowcount
+
+
 def delegation_decision_hop(
     envelope: DelegationEnvelope,
     decision: DelegationDecision,
@@ -147,9 +134,7 @@ def delegation_decision_hop(
         from_actor=envelope.caller_agent_id,
         to_agent_id=envelope.target_agent_id,
         task_type=envelope.task_type,
-        delegated_capabilities=decision.effective_capabilities
-        if decision.decision == "allow"
-        else [],
+        delegated_capabilities=decision.effective_capabilities if decision.decision == "allow" else [],
         missing_capabilities=decision.missing_capabilities,
         decision=decision.decision,
     )
@@ -159,16 +144,8 @@ def decision_detail_json(envelope: DelegationEnvelope, decision: DelegationDecis
     detail = decision.to_detail().model_dump()
     detail["auth_event_recorded"] = envelope.auth_context is not None
     detail["token_jti"] = envelope.auth_context.jti if envelope.auth_context is not None else None
-    detail["token_agent_id"] = (
-        envelope.auth_context.agent_id if envelope.auth_context is not None else None
-    )
-    detail["credential_id"] = (
-        envelope.auth_context.credential_id if envelope.auth_context is not None else None
-    )
-    detail["parent_credential_id"] = (
-        envelope.auth_context.parent_credential_id if envelope.auth_context is not None else None
-    )
-    detail["root_credential_id"] = (
-        envelope.auth_context.root_credential_id if envelope.auth_context is not None else None
-    )
+    detail["token_agent_id"] = envelope.auth_context.agent_id if envelope.auth_context is not None else None
+    detail["credential_id"] = envelope.auth_context.credential_id if envelope.auth_context is not None else None
+    detail["parent_credential_id"] = envelope.auth_context.parent_credential_id if envelope.auth_context is not None else None
+    detail["root_credential_id"] = envelope.auth_context.root_credential_id if envelope.auth_context is not None else None
     return json.dumps(detail, ensure_ascii=False)

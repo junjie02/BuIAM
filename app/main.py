@@ -17,12 +17,6 @@ from app.store.chain import list_chain
 from app.store.delegation_credentials import list_credentials
 from app.store.intent_tree import get_intent_node, list_intent_tree
 from app.store.schema import init_schema
-from app.store.tokens import cleanup_expired_tokens
-
-
-# 定时任务功能（可选，需要安装apscheduler后启用）
-# from apscheduler.schedulers.background import BackgroundScheduler
-# scheduler = BackgroundScheduler()
 
 
 def on_startup() -> None:
