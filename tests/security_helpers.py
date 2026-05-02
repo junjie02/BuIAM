@@ -45,6 +45,11 @@ def configure_test_environment() -> None:
     os.environ["INTENT_GENERATOR_PROVIDER"] = "mock"
     os.environ["INTENT_JUDGE_PROVIDER"] = "mock"
     os.environ["A2A_FORWARD_TIMEOUT_SECONDS"] = "10"
+    # Explicitly disable ML-DSA for tests to avoid .env interference.
+    # The .env file may set BUIAM_USE_MLDSA=true which changes signing algorithm
+    # after bootstrap, causing key type mismatch.
+    os.environ["BUIAM_USE_MLDSA"] = "false"
+    os.environ["BUIAM_AUTH_SIGNATURE_ALG"] = "BUIAM-RS256"
 
 
 configure_test_environment()
@@ -53,7 +58,7 @@ from app.delegation.credential_crypto import auth_context_from_credential
 from app.identity.jwt_service import issue_token, verify_token
 from app.main import app as gateway_app
 from app.protocol import AuthContext, DelegationEnvelope, DelegationHop, RootTaskRequest
-from app.registry.bootstrap import register_demo_agents
+from app.registry.bootstrap import bootstrap_demo_identities_locally
 from app.store.delegation_credentials import get_credential
 from app.store.intent_tree import get_intent_node, row_to_intent_node
 from app.store.schema import DB_PATH, init_schema
@@ -103,7 +108,7 @@ def reset_runtime_db() -> None:
     if Path(DB_PATH).exists():
         Path(DB_PATH).unlink()
     init_schema()
-    register_demo_agents()
+    bootstrap_demo_identities_locally()
 
 
 def build_server_handles() -> list[ServerHandle]:
@@ -271,6 +276,23 @@ def agent_envelope(
         auth_context=auth_context,
         payload=payload or {"user_task": f"security test {task_type}"},
     )
+
+
+def generate_local_identity(subject_id: str, service_endpoint: str | None = None) -> tuple[dict, dict]:
+    """Generate a keypair and DID Document locally, returning (did_document, proof)."""
+    from app.identity.keys import ensure_agent_keypair
+    from app.identity.did import build_did_document
+    from app.identity.did_proof import create_did_proof
+
+    ensure_agent_keypair(subject_id)
+    did_document = build_did_document(subject_id, service_endpoint=service_endpoint)
+    proof = create_did_proof(did_document, subject_id)
+    return did_document, proof
+
+
+async def register_did_via_api(client: httpx.AsyncClient, did_document: dict, proof: dict) -> httpx.Response:
+    """Submit a DID Document to the Gateway for registration."""
+    return await client.post("/identity/did-register", json={"did_document": did_document, "proof": proof})
 
 
 def run(coro):

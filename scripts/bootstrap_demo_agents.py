@@ -6,13 +6,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.registry.bootstrap import register_demo_agents
+from app.registry.bootstrap import bootstrap_demo_identities_locally
 from app.store.did_registry import list_did_documents
 from app.store.registry import list_agents
 
 
 def main() -> None:
-    register_demo_agents()
+    bootstrap_demo_identities_locally()
     print(
         json.dumps(
             {

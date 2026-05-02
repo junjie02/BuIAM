@@ -15,7 +15,7 @@ def build_verification_method_id(did: str, key_label: str = "key-1") -> str:
     return f"{did}#{key_label}"
 
 
-def build_did_document(subject_id: str, *, key_label: str = "key-1") -> dict[str, Any]:
+def build_did_document(subject_id: str, *, key_label: str = "key-1", service_endpoint: str | None = None) -> dict[str, Any]:
     did = build_did(subject_id)
     vm_id = build_verification_method_id(did, key_label)
     use_mldsa = os.getenv("BUIAM_USE_MLDSA", "false").lower() == "true"
@@ -33,6 +33,13 @@ def build_did_document(subject_id: str, *, key_label: str = "key-1") -> dict[str
             "n": _int_str_to_base64url(public_key["n"]),
             "e": _int_str_to_base64url(public_key["e"]),
         }
+    service: list[dict[str, str]] = []
+    if service_endpoint:
+        service.append({
+            "id": f"{did}#a2a-service",
+            "type": "A2A-Service",
+            "serviceEndpoint": service_endpoint,
+        })
     return {
         "@context": ["https://www.w3.org/ns/did/v1"],
         "id": did,
@@ -41,7 +48,7 @@ def build_did_document(subject_id: str, *, key_label: str = "key-1") -> dict[str
         "assertionMethod": [vm_id],
         "capabilityDelegation": [vm_id],
         "keyAgreement": [],
-        "service": [],
+        "service": service,
         "metadata": {"subject_id": subject_id, "fingerprint": _jwk_fingerprint(jwk)},
     }
 

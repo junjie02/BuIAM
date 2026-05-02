@@ -21,9 +21,12 @@ load_dotenv()
 os.environ.setdefault("LLM_PROVIDER", "mock")
 os.environ.setdefault("INTENT_GENERATOR_PROVIDER", "mock")
 os.environ.setdefault("INTENT_JUDGE_PROVIDER", "mock")
+os.environ.setdefault("BUIAM_USE_MLDSA", "false")
+os.environ.setdefault("BUIAM_AUTH_SIGNATURE_ALG", "BUIAM-RS256")
 
 from app.main import app as gateway_app
 from app.protocol import RootTaskRequest
+from app.registry.bootstrap import bootstrap_demo_identities_locally
 from examples.agent.doc_service import app as doc_app
 from examples.agent.enterprise_data_service import app as enterprise_app
 from examples.agent.external_search_service import app as external_app
@@ -126,6 +129,11 @@ async def main() -> None:
         ManagedServer("external_search_agent", external_app, port_from_url(EXTERNAL_SEARCH_AGENT_ENDPOINT, 8013)),
     ]
     try:
+        # Bootstrap identities locally before starting Gateway.
+        # In production each entity would run generate_identity.py independently,
+        # but for the demo we inject everything directly for a smooth experience.
+        bootstrap_demo_identities_locally()
+
         for server in servers:
             await server.ensure_running()
 

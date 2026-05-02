@@ -118,15 +118,27 @@ $env:INTENT_JUDGE_PROVIDER='mock'
 python scripts/demo.py
 ```
 
-`scripts/demo.py` 会在本机端口没有服务时自动启动 Gateway 和三个 demo Agent。
+`scripts/demo.py` 会自动：
+1. 为 demo 用户和 agent 生成本地密钥对和 DID Document（本地注入模拟客户端提交）
+2. 启动 Gateway 和三个 demo Agent
+3. 执行 normal chain 和 denied chain 演示
 
-也可以手动用四个终端启动：
+### 客户端自行注册身份（独立流程）
+
+在生产环境中，每个实体在本地生成密钥对并自行提交 DID Document：
 
 ```powershell
+# 1. 启动 Gateway（不自动生成任何密钥）
 uvicorn app.main:app --port 8000
-uvicorn examples.agent.doc_service:app --port 8011
-uvicorn examples.agent.enterprise_data_service:app --port 8012
-uvicorn examples.agent.external_search_service:app --port 8013
+
+# 2. 客户端生成密钥对 + DID Document 并提交
+python examples/generate_identity.py --subject-id user_123 --submit
+python examples/generate_identity.py --subject-id doc_agent --service-endpoint http://127.0.0.1:8011/a2a/tasks --submit
+python examples/generate_identity.py --subject-id enterprise_data_agent --service-endpoint http://127.0.0.1:8012/a2a/tasks --submit
+python examples/generate_identity.py --subject-id external_search_agent --service-endpoint http://127.0.0.1:8013/a2a/tasks --submit
+
+# 3. Gateway 校验 DID Document 格式和 proof（自签名），通过后存入白名单
+# 4. 白名单中的身份才能签发 Token
 ```
 
 ## 测试

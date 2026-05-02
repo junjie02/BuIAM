@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 
 from app.identity.did import build_did, build_did_document
 from app.identity.keys import ensure_agent_keypair
-from app.store.did_registry import upsert_did_document
+from app.store.did_registry import get_did_document, upsert_did_document
 from app.store.registry import upsert_agent
+
+logger = logging.getLogger("buiam.registry.bootstrap")
 
 USER_ID = os.getenv("BUIAM_DEMO_USER_ID", "user_123")
 
@@ -53,15 +56,70 @@ DEMO_AGENTS = [
 ]
 
 
-def register_demo_agents() -> None:
+def ensure_local_identities() -> None:
+    """Generate keypairs and store DID Documents locally (client-side simulation).
+
+    This simulates what a real client does via ``examples/generate_identity.py``.
+    Keys are written to ``data/keys/`` and DID Documents are injected directly
+    into the local SQLite database — no HTTP API calls needed.
+
+    This function exists for demo / test convenience. In production each entity
+    runs its own ``generate_identity.py`` and submits its DID Document via the
+    Gateway API.
+    """
     ensure_agent_keypair(USER_ID)
     user_doc = build_did_document(USER_ID)
     upsert_did_document(did=build_did(USER_ID), subject_id=USER_ID, document=user_doc)
     for agent in DEMO_AGENTS:
         agent_id = str(agent["agent_id"])
+        endpoint = os.getenv(str(agent["endpoint_env"]), str(agent["default_endpoint"]))
         ensure_agent_keypair(agent_id)
-        did_doc = build_did_document(agent_id)
+        did_doc = build_did_document(agent_id, service_endpoint=endpoint)
         upsert_did_document(did=build_did(agent_id), subject_id=agent_id, document=did_doc)
+
+
+def register_did_documents() -> int:
+    """Store DID Documents for demo identities (direct DB injection, no API).
+
+    Returns the number of DID Documents written.
+    """
+    count = 0
+    user_did = build_did(USER_ID)
+    if get_did_document(user_did) is None:
+        user_doc = build_did_document(USER_ID)
+        upsert_did_document(did=user_did, subject_id=USER_ID, document=user_doc)
+        count += 1
+    for agent in DEMO_AGENTS:
+        agent_id = str(agent["agent_id"])
+        agent_did = build_did(agent_id)
+        if get_did_document(agent_did) is None:
+            endpoint = os.getenv(str(agent["endpoint_env"]), str(agent["default_endpoint"]))
+            did_doc = build_did_document(agent_id, service_endpoint=endpoint)
+            upsert_did_document(did=agent_did, subject_id=agent_id, document=did_doc)
+            count += 1
+    return count
+
+
+def register_agent_metadata() -> int:
+    """Register agent metadata in the agents table.
+
+    Requires DID Documents to already exist in ``did_documents`` table.
+    Skips agents whose DID is not yet registered and logs a warning.
+
+    Returns the number of agents registered.
+    """
+    registered = 0
+    for agent in DEMO_AGENTS:
+        agent_id = str(agent["agent_id"])
+        if get_did_document(build_did(agent_id)) is None:
+            logger.warning(
+                "Skipping agent '%s': DID Document not registered. "
+                "Run 'python examples/generate_identity.py --subject-id %s --submit' first.",
+                agent_id,
+                agent_id,
+            )
+            continue
+        endpoint = os.getenv(str(agent["endpoint_env"]), str(agent["default_endpoint"]))
         upsert_agent(
             agent_id=agent_id,
             name=str(agent["name"]),
@@ -70,6 +128,56 @@ def register_demo_agents() -> None:
             owner_org="demo",
             allowed_resource_domains=["feishu", "public_web"],
             status="active",
-            endpoint=os.getenv(str(agent["endpoint_env"]), str(agent["default_endpoint"])),
+            endpoint=endpoint,
             static_capabilities=list(agent["static_capabilities"]),
         )
+        registered += 1
+    return registered
+
+
+def bootstrap_demo_identities_locally() -> None:
+    """Full local bootstrap for tests and demo scripts.
+
+    Generates keypairs (if missing), writes DID Documents, and registers
+    agent metadata — all via direct DB access without HTTP API calls.
+
+    Use this in tests, security scripts, and the demo.py launcher
+    where Gateway and clients run on the same host.
+    """
+    ensure_local_identities()
+    register_agent_metadata()
+
+
+def register_demo_agents() -> None:
+    """Gateway startup: register agent metadata for identities whose DID Documents
+    are already in the database.
+
+    This function no longer generates keypairs. Entities must generate their
+    own keypairs and submit DID Documents before the Gateway can recognise them.
+
+    For demo convenience, the Gateway prints guidance when DID Documents are
+    missing so the operator can run ``examples/generate_identity.py``.
+    """
+    user_did = build_did(USER_ID)
+    if get_did_document(user_did) is None:
+        logger.warning(
+            "Demo user DID Document not found (%s). "
+            "Run 'python examples/generate_identity.py --subject-id %s --submit' to register it.",
+            user_did,
+            USER_ID,
+        )
+        for agent in DEMO_AGENTS:
+            agent_id = str(agent["agent_id"])
+            agent_did = build_did(agent_id)
+            if get_did_document(agent_did) is None:
+                logger.warning(
+                    "Agent DID Document not found (%s). "
+                    "Run 'python examples/generate_identity.py --subject-id %s --submit' to register it.",
+                    agent_did,
+                    agent_id,
+                )
+        return
+
+    registered = register_agent_metadata()
+    if registered == 0:
+        logger.warning("No agent metadata registered. Ensure DID Documents exist first.")

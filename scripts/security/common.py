@@ -54,13 +54,16 @@ os.environ.setdefault("LLM_PROVIDER", "mock")
 os.environ.setdefault("INTENT_GENERATOR_PROVIDER", "mock")
 os.environ.setdefault("INTENT_JUDGE_PROVIDER", "mock")
 os.environ.setdefault("A2A_FORWARD_TIMEOUT_SECONDS", "10")
+# Lock signing to RSA for deterministic security checks (override .env ML-DSA if set)
+os.environ["BUIAM_USE_MLDSA"] = "false"
+os.environ["BUIAM_AUTH_SIGNATURE_ALG"] = "BUIAM-RS256"
 
 from app.delegation.credential_crypto import auth_context_from_credential, verify_credential_integrity
 from app.identity.jwt_service import issue_token
 from app.intent.crypto import verify_intent_node_signature
 from app.main import app as gateway_app
 from app.protocol import DelegationEnvelope, DelegationHop, RootTaskRequest
-from app.registry.bootstrap import register_demo_agents
+from app.registry.bootstrap import bootstrap_demo_identities_locally
 from app.store.delegation_credentials import get_credential, list_credentials
 from app.store.intent_tree import get_intent_node, row_to_intent_node
 from app.store.schema import DB_PATH, init_schema
@@ -134,10 +137,10 @@ class SecurityContext:
             reset_runtime_db()
         else:
             init_schema()
-            register_demo_agents()
+            bootstrap_demo_identities_locally()
         for server in self.servers:
             await server.ensure_running()
-        register_demo_agents()
+        bootstrap_demo_identities_locally()
         return self
 
     async def __aexit__(self, *_exc):
@@ -177,7 +180,7 @@ def reset_runtime_db() -> None:
     if Path(DB_PATH).exists():
         Path(DB_PATH).unlink()
     init_schema()
-    register_demo_agents()
+    bootstrap_demo_identities_locally()
 
 
 async def is_healthy(url: str) -> bool:
