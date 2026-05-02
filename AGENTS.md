@@ -46,6 +46,7 @@ Common commands:
 - `python scripts/bootstrap_demo_agents.py` registers demo Agent metadata and ensures development keypairs.
 - `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider` runs the full automated test suite.
 - `python scripts/security/run_all_security_checks.py` runs manual security verification scripts.
+- `python scripts/security/verify_identity_vc.py --json` verifies DID identity, token introspection, and VC-shaped delegation credentials, then prints the verification flow, DID Documents, token claims/introspection, and root/delegated VC content.
 - `python scripts/security/find_security_node.py --credential-id <id>` traces a credential node back to root.
 - `python scripts/security/find_security_node.py --intent-node-id <id>` traces an intent node back to root.
 
@@ -117,6 +118,14 @@ Manual security script behavior is documented in:
 ```text
 scripts/security/SECURITY_CHECKS_EXPLAINED.md
 ```
+
+For identity and VC demos, run:
+
+```bash
+python scripts/security/verify_identity_vc.py --json
+```
+
+This script forces deterministic mock providers, starts or reuses the local Gateway/Agents, registers DID Documents, issues a user Bearer token, introspects it, executes a root A2A task, and prints both the root token credential and delegated Agent credential in VC-shaped form with recomputed hashes and signature verification results.
 
 ## Configuration
 

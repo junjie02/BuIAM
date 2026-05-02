@@ -1,164 +1,207 @@
-# BuIAM A2A 安全委托 Demo
+# BuIAM A2A Security Delegation Demo
 
-BuIAM 是一个基于 FastAPI 的 Agent-to-Agent 安全委托演示系统。当前三个业务 Agent 的执行动作仍然使用可控的 mock provider，因此不需要真实飞书 API 配置也能跑通；但安全链路是真实实现：JWT 验证、签名化委托凭证、意图链校验、Token 吊销、过期处理、运行中任务取消和审计追踪都在 Gateway 中完成。
+BuIAM is a FastAPI implementation of an Agent-to-Agent security delegation protocol. The demo business actions can run with deterministic mock providers, while the Gateway-side security logic is real: DID documents, signed VC-shaped delegation credentials, intent-chain validation, token revocation/expiration, running task cancellation, and audit tracing.
 
-## 安全约束
+## What Is Implemented
 
-- 每一跳 A2A 调用都会生成 signed delegation credential，包含父子关系、root 引用、能力收缩、过期时间、哈希和签名。
-- root task 和 agent-to-agent 调用都会生成并校验 intent node，保留 intent parent/root 关系。
-- Token 吊销会级联撤销 descendant credentials，并取消受影响 trace 的进程内运行任务。
-- Token/credential 自然过期只阻止新请求、新委托和新工具访问，不主动取消已经开始的任务。
-- `delegation_chain` 只做人类可读审计摘要；真正的授权事实来源是 signed credential 链。
-- `/audit/traces/{trace_id}` 可以查询 logs、delegation chain、delegation credentials、auth events、intent tree 和 decision detail。
+- Formal Gateway entrypoints: `POST /a2a/root-tasks` and `POST /a2a/agents/{target_agent_id}/tasks`.
+- Signed `DelegationCredential` records shaped like Verifiable Credentials.
+- Recomputable credential hash-chain node IDs.
+- DID-based verification methods for RSA and optional ML-DSA signatures.
+- Signed intent nodes and parent/root continuity validation.
+- Bearer token issue, introspection, revocation, expiration, and credential binding.
+- Audit traces that combine logs, auth events, delegation credentials, and intent tree records.
+- Demo Agent provider modes:
+  - `mock`: deterministic local data, recommended for tests and baseline demos.
+  - `lark_cli`: optional real Feishu reads/writes through local `lark-cli`.
 
-## 运行结构
-
-```text
-Gateway:               http://127.0.0.1:8000
-doc_agent:             http://127.0.0.1:8011/a2a/tasks
-enterprise_data_agent: http://127.0.0.1:8012/a2a/tasks
-external_search_agent: http://127.0.0.1:8013/a2a/tasks
-```
-
-用户发起任务：
+## Repository Layout
 
 ```text
-POST /a2a/root-tasks
+app/                  Gateway, identity, delegation, intent, registry, store
+examples/agent/       Demo Agent services and provider layer
+scripts/              Demo/bootstrap helpers
+scripts/security/     Manual security verification scripts
+tests/                Pytest regression tests
+third_party/liboqs    liboqs submodule for optional ML-DSA runtime
+data/                 Local runtime DB/key material, not for commits
 ```
 
-Agent 之间发送普通 A2A task 请求，统一由 Gateway 拦截、鉴权、授权、生成下一跳 credential/intent，并转发：
+## Setup
 
-```text
-POST /a2a/agents/{target_agent_id}/tasks
-```
-
-## 快速开始
-
-```bash
+```powershell
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+```
+
+Initialize the third-party submodule after cloning or pulling:
+
+```powershell
+git submodule update --init --recursive
+```
+
+If `third_party/liboqs` is empty, the submodule was not initialized.
+
+## Build liboqs For ML-DSA On Windows
+
+The project can use ML-DSA through `liboqs-python`, but the native liboqs runtime must be available. The code automatically checks:
+
+```text
+third_party/liboqs/install
+```
+
+Recommended Windows toolchain:
+
+- Visual Studio Build Tools 2022
+- Workload: `Desktop development with C++`
+- Components: MSVC v143 and Windows 10/11 SDK
+- CMake installed and available on `PATH`
+
+Open `x64 Native Tools Command Prompt for VS 2022`, then run:
+
+```bat
+cd /d F:\AAA飞书挑战赛\Code\third_party\liboqs
+rmdir /s /q build
+
+cmake -S . -B build -DCMAKE_INSTALL_PREFIX="%CD%\install" -DBUILD_SHARED_LIBS=ON
+cmake --build build --config Release
+cmake --install build --config Release
+```
+
+Expected installed files include:
+
+```text
+third_party/liboqs/install/bin/oqs.dll
+third_party/liboqs/install/lib/oqs.lib
+third_party/liboqs/install/include/oqs/sig_ml_dsa.h
+```
+
+Install the Python binding:
+
+```powershell
+cd F:\AAA飞书挑战赛\Code
+.venv\Scripts\activate
+python -m pip install liboqs-python
+```
+
+Verify ML-DSA:
+
+```powershell
+python -c "from app.identity.keys import ensure_agent_mldsa_keypair; ensure_agent_mldsa_keypair('test-agent'); print('ML-DSA ok')"
+```
+
+To enable ML-DSA signatures instead of the default RSA path:
+
+```powershell
+$env:BUIAM_USE_MLDSA='true'
+$env:BUIAM_AUTH_SIGNATURE_ALG='BUIAM-MLDSA-65'
+```
+
+## Run The Demo
+
+Mock mode is the stable local baseline:
+
+```powershell
+$env:BUIAM_AGENT_PROVIDER_MODE='mock'
+$env:LLM_PROVIDER='mock'
+$env:INTENT_GENERATOR_PROVIDER='mock'
+$env:INTENT_JUDGE_PROVIDER='mock'
 python scripts/demo.py
 ```
 
-`scripts/demo.py` 会在本机端口没有服务时自动启动 Gateway 和三个 demo Agent，然后执行：
+The demo starts the Gateway and three demo Agents if they are not already running.
 
-- 正常链路：`user -> doc_agent -> enterprise_data_agent`
-- 越权链路：`user -> external_search_agent -> enterprise_data_agent`
-- 两条 trace 的审计摘要
+Manual startup uses four terminals:
 
-如果希望 demo 结束后保留服务进程：
-
-```bash
-set BUIAM_DEMO_KEEP_SERVERS=1
-python scripts/demo.py
-```
-
-## 手动启动
-
-也可以打开四个终端分别启动：
-
-```bash
+```powershell
 uvicorn app.main:app --port 8000
 uvicorn examples.agent.doc_service:app --port 8011
 uvicorn examples.agent.enterprise_data_service:app --port 8012
 uvicorn examples.agent.external_search_service:app --port 8013
 ```
 
-Gateway 启动时会自动注册三个 demo Agent。也可以手动执行：
+## Test
 
-```bash
-python scripts/bootstrap_demo_agents.py
+Run only this repository's tests. Do not let pytest collect `third_party/liboqs/tests`.
+
+```powershell
+$env:BUIAM_AGENT_PROVIDER_MODE='mock'
+$env:LLM_PROVIDER='mock'
+$env:INTENT_GENERATOR_PROVIDER='mock'
+$env:INTENT_JUDGE_PROVIDER='mock'
+.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider
 ```
 
-## Demo Agent
+Current baseline verified locally:
 
-- `doc_agent`：编排报告生成，委托企业数据读取，并写入 mock 飞书文档。
-- `enterprise_data_agent`：返回 mock 通讯录、日历、知识库信号和多维表格记录。
-- `external_search_agent`：返回 mock 公网搜索结果，并用于演示越权读取企业数据被拒绝。
-
-mock 行为集中在 `examples/agent/demo_provider.py`。后续接入真实飞书 OpenAPI 时，优先替换 provider 层，不需要改 Gateway 的安全链路。
-
-## 常用 API
-
-- `GET /health`
-- `GET /registry/agents`
-- `POST /identity/tokens`
-- `POST /identity/tokens/{jti}/revoke`
-- `POST /a2a/root-tasks`
-- `POST /a2a/agents/{target_agent_id}/tasks`
-- `GET /audit/logs`
-- `GET /audit/auth-events`
-- `GET /audit/traces/{trace_id}`
-
-## 自动化测试
-
-```bash
-.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider
+```text
+42 passed
 ```
 
-测试覆盖：
+## Security Verification Scripts
 
-- 正常委托链、意图链和审计落库。
-- 越权委托、能力收缩和 `missing_by`。
-- credential 篡改、跨 trace credential 复用、parent/root 连续性。
-- intent 篡改、签名错误、parent 丢失、actor mismatch、intent drift、跨 trace parent intent。
-- Token 签发、过期、吊销、级联撤销和运行中 sleep task 取消。
-- A2A Bearer 缺失、伪造、主体不一致、user token 冒充 agent、未知 target agent。
-- 不可抵赖：credential issuer 签名和 intent actor 签名可用对应公钥验证。
-
-## 人工安全验证脚本
-
-脚本位于 `scripts/security/`，默认会启动或复用本机 Gateway 与三个 Agent。业务动作仍然是 mock，安全校验是真实链路。
-
-```bash
+```powershell
 python scripts/security/verify_delegation_chain.py
 python scripts/security/verify_intent_chain.py
-python scripts/security/find_security_node.py
 python scripts/security/verify_chain_binding.py
 python scripts/security/verify_token_lifecycle.py
 python scripts/security/verify_a2a_identity.py
+python scripts/security/verify_identity_vc.py --json
 python scripts/security/run_all_security_checks.py
 ```
 
-通用参数：
+`verify_identity_vc.py --json` prints:
 
-- `--keep-db`：保留 `data/audit.db`，不在脚本开始时清空。
-- `--trace-id <id>`：指定 trace id，便于复现实验。
-- `--json`：输出 JSON，方便验收或接入 CI。
+- the verification flow,
+- registered DID Documents,
+- decoded token header and claims,
+- token introspection result,
+- root VC-shaped credential,
+- delegated Agent VC-shaped credential,
+- recomputed `content_hash`,
+- recomputed `credential_id`,
+- proof signature verification result.
 
-推荐一键验证：
+## lark-cli Provider Mode
 
-```bash
-python scripts/security/run_all_security_checks.py
+The Gateway security chain is unchanged when using real Feishu data. Only the demo Agent provider layer changes.
+
+Enable real Feishu access:
+
+```powershell
+$env:BUIAM_AGENT_PROVIDER_MODE='lark_cli'
+$env:BUIAM_LARK_CLI_BIN='lark-cli'
+$env:BUIAM_LARK_CLI_AS='user'
+$env:BUIAM_LARK_CLI_BITABLE_APP_TOKEN='app_token'
+$env:BUIAM_LARK_CLI_BITABLE_TABLE_ID='tbl_id'
 ```
 
-## lark-cli Provider Integration
+Install and authenticate `lark-cli` separately:
 
-The Gateway security chain is unchanged. Real Feishu access is attached only at
-the demo Agent provider layer.
-
-Enable the real provider by setting:
-
-```bash
-set BUIAM_AGENT_PROVIDER_MODE=lark_cli
-set BUIAM_LARK_CLI_AS=user
-set BUIAM_LARK_CLI_BITABLE_APP_TOKEN=app_token
-set BUIAM_LARK_CLI_BITABLE_TABLE_ID=tbl_id
-```
-
-Then install and authenticate `lark-cli` on the same machine:
-
-```bash
+```powershell
 npm install -g @larksuiteoapi/cli
 lark-cli auth login --recommend
 ```
 
-Current integration scope:
+Use `mock` mode for deterministic tests. Use `lark_cli` only when you intentionally want local Feishu API calls.
 
-- `enterprise_data_agent` reads contacts, agenda, wiki spaces, and optionally bitable records through `lark-cli`
-- `doc_agent` still composes the report locally, then creates a real Feishu doc through `lark-cli`
-- `external_search_agent` stays on the mock public-search provider
+## Commit Notes
 
-If `BUIAM_AGENT_PROVIDER_MODE` is left as `mock`, all existing demo flows and
-security tests continue to use the deterministic mock providers.
+Do not commit:
+
+- `.env`
+- real API keys
+- generated databases under `data/`
+- generated keypairs
+- `.venv`
+- `third_party/liboqs/build`
+- `third_party/liboqs/install`
+
+The correct way to share liboqs is the submodule metadata plus submodule pointer:
+
+```powershell
+git add .gitmodules third_party/liboqs
+git commit -m "Fix liboqs submodule metadata"
+git push
+```
