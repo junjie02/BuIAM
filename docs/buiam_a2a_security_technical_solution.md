@@ -23,27 +23,34 @@
 
 当前项目已经实现：
 
-- Agent 注册与发现。
-- 开发版 RSA keypair 生成和加载。
-- 共享 crypto helper：canonical JSON、base64url、RSA sign/verify、SHA256。
+- W3C DID 身份体系：`did:buiam:{subject_id}`，DID Document 构建、注册、解析。
+- DID 注册与白名单：`POST /identity/did-register`，含 proof 自签名验证，客户端通过 `examples/generate_identity.py` 自主生成密钥对并提交。
+- Agent Capability VC：注册时 Gateway 用系统身份签发，能力与身份密码学绑定。
+- 能力审批引擎：注册时根据 `capability_policies` 表按 agent_type 审批，支持 approved/modified/denied 三种结果。
+- 能力字典管理：`capabilities` 表存储权威能力列表，API 支持 CRUD。
+- 能力发现 API：`GET /registry/capabilities`，客户端注册前可查询可申请能力清单。
+- Agent 注册与发现：`GET /registry/agents?capability=X` 按能力过滤。
+- RSA / ML-DSA 双签名支持：通过 `BUIAM_USE_MLDSA` 环境变量切换后量子签名。
+- 开发版 RSA/ML-DSA keypair 生成和加载。
+- 共享 crypto helper：canonical JSON、base64url、RSA/ML-DSA sign/verify、SHA256。
 - JWT-like access token 签发、验签、过期、吊销、jti 注册检查。
-- Token 签发时同步创建 root delegation credential。
+- Token 签发前强制检查 DID 已注册（白名单），签发时同步创建 root delegation credential。
+- Token introspection 端点：`POST /identity/tokens/introspect`。
 - A2A Gateway 正式入口：
-  - `POST /a2a/root-tasks`
-  - `POST /a2a/agents/{target_agent_id}/tasks`
-- 每一跳授权生成 signed delegation credential。
+  - `POST /a2a/root-tasks`（用户入口）
+  - `POST /a2a/agents/{target_agent_id}/tasks`（Agent 间入口）
+- 每一跳授权生成 signed delegation credential（VC-shaped，含 issuer_did/subject_did/proof）。
 - 每一跳生成或校验 signed intent node。
-- 能力交集授权：请求能力、调用方能力、目标 Agent 静态能力、用户授权能力取交集。
-- credential hash/signature、parent/root、capability narrowing、trace 连续性校验。
+- 能力交集授权：`caller_token ∩ target_agent_caps(来自Agent VC) ∩ requested ∩ user`。
+- credential hash/signature、parent/root、capability narrowing、trace 连续性、DID 交叉验证。
 - intent hash/signature、actor、parent/root、trace 连续性和 judge 结果校验。
 - Token revoke 级联撤销 descendant credentials，并按 trace 取消进程内运行任务。
 - Token/credential 过期阻止新请求、新委托、新工具访问，但不主动取消已开始任务。
+- 失败处理分级：FATAL（不可恢复）vs DENIED（可恢复 + suggested_agents 恢复提示）。
+- 审计全覆盖：所有失败路径（含 AGENT_NOT_REGISTERED、AUTH_ACTOR_TYPE_INVALID 等）均写 audit log。
 - 完整审计查询：auth events、audit logs、delegation chain、delegation credentials、intent tree。
-- 三个独立 demo Agent 服务：
-  - `doc_agent`
-  - `enterprise_data_agent`
-  - `external_search_agent`
-- 安全验证脚本与 pytest 回归测试。
+- 三个独立 demo Agent 服务：`doc_agent`、`enterprise_data_agent`、`external_search_agent`。
+- pytest 回归测试：76 tests，覆盖正常/异常/恶意/漂移/篡改/分级全部场景。
 
 ## 3. 总体架构
 
@@ -79,17 +86,18 @@ external_search_agent: http://127.0.0.1:8013/a2a/tasks
 | --- | --- |
 | `app/protocol.py` | 协议模型、请求响应模型、审计模型、credential 和 intent 数据模型 |
 | `app/main.py` | FastAPI 应用、startup、路由挂载、审计查询接口 |
-| `app/gateway/routes.py` | A2A 入口、Bearer 校验、授权/意图编排、审计、转发、任务取消响应 |
-| `app/identity/` | Token 签发/验签/吊销、开发版 RSA key、共享 crypto helper |
-| `app/delegation/` | capability 解析与交集、credential 构造/签名/校验、委托授权服务 |
+| `app/gateway/routes.py` | A2A 入口、Bearer 校验、授权/意图编排、审计、转发、任务取消响应、错误分级 |
+| `app/identity/` | Token 签发/验签/吊销、RSA/ML-DSA 密钥管理、DID 文档构建/解析、DID proof、共享 crypto helper |
+| `app/delegation/` | capability 解析与交集、credential 构造/签名/校验（VC-shaped）、委托授权服务、Agent VC |
 | `app/intent/` | intent 生成、judge、intent node 签名、hash chain 校验 |
-| `app/registry/` | demo Agent 注册启动逻辑和 registry API |
+| `app/registry/` | Agent 注册（含能力审批）、DID 引导、Capability 字典管理、审批策略管理、registry API |
 | `app/store/` | SQLite schema 和各类安全事实/审计数据访问 |
 | `app/runtime/tasks.py` | 单进程 asyncio task registry，用于 revoke 时按 trace 取消任务 |
 | `app/sdk/client.py` | Agent 调用 Gateway 的 A2A client |
-| `examples/agent/` | 三个 demo Agent 服务与 mock provider |
-| `scripts/` | demo、bootstrap、安全验证脚本 |
-| `tests/` | smoke、集成和安全回归测试 |
+| `examples/agent/` | 三个 demo Agent 服务与 mock/lark_cli provider |
+| `examples/generate_identity.py` | 客户端本地生成密钥对 + DID Document + 提交注册 |
+| `scripts/` | demo 启动、bootstrap |
+| `tests/` | pytest 回归测试（76 tests），覆盖全部安全域 |
 
 ### 3.3 当前 demo Agent
 
@@ -103,21 +111,38 @@ external_search_agent: http://127.0.0.1:8013/a2a/tasks
 
 ## 4. 协议与核心模型
 
-### 4.1 Capability
+### 4.1 Capability 体系
 
-当前 capability 是静态字符串白名单：
+能力体系分为三层：
+
+**① 能力字典（`capabilities` 表）：**
+
+权威的合法能力名称列表，由 Admin 通过 API 管理：
 
 ```text
-report:write
-feishu.doc:write
-feishu.contact:read
-feishu.calendar:read
-feishu.wiki:read
-feishu.bitable:read
-web.public:read
+report:write       feishu.contact:read   feishu.wiki:read     web.public:read
+feishu.doc:write   feishu.calendar:read  feishu.bitable:read
 ```
 
-授权时不支持通配符，也不支持隐式继承。新增能力需要同时在协议模型、能力解析、Agent 注册、Token 和请求中明确声明。
+客户端通过 `GET /registry/capabilities` 发现可申请的全部能力。
+
+**② 审批策略（`capability_policies` 表）：**
+
+定义每种 agent_type 的能力天花板，由 Admin 通过 API 配置：
+
+| subject_type | agent_type | allowed_capabilities |
+|---|---|---|
+| agent | doc_agent | 全部 7 个 |
+| agent | enterprise_data_agent | 4 个企业数据读 |
+| agent | external_search_agent | web.public:read |
+| agent | * | web.public:read（兜底） |
+| user | * | 全部 7 个 |
+
+**③ Agent VC（`delegation_credentials` 表）：**
+
+注册时经过审批后的实际授予能力，以 Gateway 系统身份签名的 VC 形式密码学绑定到 Agent 身份。
+
+完整闭环见第 4.2 节。
 
 ### 4.2 DelegationEnvelope
 
@@ -173,11 +198,11 @@ Gateway 会拒绝 user token 冒充 agent 调用 A2A，也会拒绝 agent token 
 {
   "alg": "BUIAM-RS256",
   "typ": "JWT",
-  "kid": "doc_agent"
+  "kid": "did:buiam:doc_agent#key-1"
 }
 ```
 
-当前 `BUIAM-RS256` 使用项目内开发版 RSA helper，不是生产级标准 JWS/JWT 库封装。后续生产化应替换为标准库与 JWKS/KMS/HSM。
+kid 指向 DID verificationMethod，验签时通过 DID 解析器获取公钥。支持 `BUIAM-RS256`（RSA，默认）和 `BUIAM-MLDSA-65`（ML-DSA 后量子，通过 `BUIAM_USE_MLDSA=true` 启用）。当前 RSA/ML-DSA 实现是开发版简化实现，后续生产化应替换为标准 JWS/JWT 库与 JWKS/KMS/HSM。
 
 ### 5.3 Token Claims
 
@@ -199,31 +224,27 @@ Gateway 会拒绝 user token 冒充 agent 调用 A2A，也会拒绝 agent token 
 
 ### 5.4 签发流程
 
-`issue_token()` 完成：
+`POST /identity/tokens` 处理流程：
 
-1. 生成 `jti`、`iat`、`exp` 和 claims。
-2. 使用 `kid=agent_id/user_id` 对 JWT signing input 签名。
-3. 创建 root `DelegationCredential`：
-   - `issuer_id = agent_id`
-   - `subject_id = agent_id`
-   - `parent_credential_id = None`
-   - `root_credential_id = credential_id`
-   - `request_id = jti`
-4. 写入 `delegation_credentials`。
-5. 写入 `tokens`，绑定 `jti -> root credential_id`。
+1. 检查 DID Document 是否已在 `did_documents` 表中注册（白名单），未注册返回 `AGENT_DID_NOT_REGISTERED`。
+2. `issue_token()` 生成 `jti`、`iat`、`exp` 和 claims。
+3. 使用 DID-style kid（`did:buiam:{agent_id}#key-1`）对 JWT signing input 签名。
+4. 创建 root `DelegationCredential`（VC-shaped，含 issuer_did/subject_did/proof）。
+5. 写入 `delegation_credentials`。
+6. 写入 `tokens`，绑定 `jti -> root credential_id`。
 
 ### 5.5 验证流程
 
 `inspect_token()` 检查：
 
 - token 结构是否可解析。
-- header `alg` 与 `kid` 是否有效。
-- RSA signature 是否有效。
-- `iss == buiam.local`。
-- `aud == buiam.a2a`。
-- `exp > now`。
-- `jti` 是否已在服务端登记。
-- token 是否 revoked。
+- header `alg` 与 `kid` 是否有效（支持 RSA 和 ML-DSA）。
+- kid 是否为 DID 格式，通过 DID 解析器获取公钥。
+- 签名是否有效（RSA 或 ML-DSA）。
+- kid 的 DID 与 claims 中的 `sub_did`/`agent_did` 是否一致。
+- key type（RSA/ML-DSA）与 header alg 是否一致。
+- `iss == buiam.local`、`aud == buiam.a2a`。
+- `exp > now`、`jti` 是否已登记、token 是否 revoked。
 - token 绑定的 root credential 是否存在、未 revoked、hash/signature 可验。
 
 验证成功后返回 `AuthContext`。验证失败时返回明确错误码，并由 Gateway 写入 `auth_events` 和 deny audit。
@@ -250,24 +271,37 @@ Gateway 会拒绝 user token 冒充 agent 调用 A2A，也会拒绝 agent token 
 
 旧方案中的 `auth_context` 字段继承已经升级为 signed delegation credential 链。JWT 只证明当前请求进程身份，credential 链证明该身份在某个 trace 中获得了哪些可委托能力。
 
-### 6.2 DelegationCredential
+### 6.2 DelegationCredential（VC-shaped）
+
+凭证使用 VC 形态，关键字段：
 
 | 字段 | 说明 |
 | --- | --- |
 | `credential_id` | credential 节点 ID，即链式哈希 |
 | `parent_credential_id` | 父 credential ID，root 为 `None` |
 | `root_credential_id` | root credential ID |
-| `issuer_id` | 签发者，root 为用户/agent 自身，child 为上游 agent |
-| `subject_id` | 被授权主体 |
+| `issuer_id` | 签发者（授权方），root 为实体自身，child 为上游 delegator |
+| `subject_id` | 被授权主体（被委托方） |
+| `issuer_did` | 签发者 DID，如 `did:buiam:user_123` |
+| `subject_did` | 被授权主体 DID |
 | `delegated_user` | 所属用户 |
 | `capabilities` | 当前凭证允许携带的能力 |
 | `user_capabilities` | 用户授权边界 |
 | `iat` / `exp` | 签发与过期时间 |
 | `trace_id` / `request_id` | 所属 trace 和 hop |
+| `vc_context` / `vc_type` | W3C VC 上下文和类型（`BuIAMDelegationCredential` 或 `BuIAMAgentCapabilityCredential`） |
+| `credential_subject` | VC subject 字典，含能力、服务端点等 |
+| `proof_verification_method` | issuer DID 的 verificationMethod ID |
+| `proof_signature` | issuer 对 `self_content` 的签名 |
+| `signature_alg` | `BUIAM-RS256` 或 `BUIAM-MLDSA-65` |
 | `content_hash` | `self_content` 的哈希 |
-| `signature` | issuer 对 `self_content` 的签名 |
-| `signature_alg` | 当前为 `BUIAM-RS256` |
 | `revoked` / `revoked_at` / `revoke_reason` | 撤销状态 |
+
+**签名方向**：凭证始终由 **issuer（授权方）用自己私钥**签名，证明"我授权 subject 使用这些能力"。root_task 中 `issuer=auth_context.agent_id`（用户），A2A 中 `issuer=envelope.caller_agent_id`（上游 Agent）。验证时通过 `issuer_did` 解析公钥验签。
+
+### 6.2b Agent Capability VC
+
+除委托凭证外，系统还有 **Agent Capability VC**（`vc_type=BuIAMAgentCapabilityCredential`），由 Gateway 系统身份（`buiam-auth-system`）在 Agent 注册时签发。它声明 Agent 被批准的能力，是运行时授权的权威来源（优先于 `agents` 表的 `static_capabilities`）。
 
 ### 6.3 哈希与签名规则
 
@@ -278,20 +312,21 @@ self_content = {
   protocol_version,
   parent_credential_id,
   root_credential_id,
-  issuer_id,
-  subject_id,
+  issuer_id, subject_id,
+  issuer_did, subject_did,
   delegated_user,
-  capabilities,
-  user_capabilities,
-  iat,
-  exp,
-  trace_id,
-  request_id
+  capabilities, user_capabilities,
+  iat, exp,
+  trace_id, request_id,
+  vc_context, vc_type,
+  credential_subject,
+  proof_verification_method,
+  signature_alg
 }
 
 content_hash = sha256(canonical_json(self_content))
 credential_id = sha256(parent_credential_id_or_ROOT + canonical_json(self_content))
-signature = rsa_sign(canonical_json(self_content), issuer_id)
+signature = sign(canonical_json(self_content), issuer_private_key)  // RSA or ML-DSA
 ```
 
 当前结构是 signed hash chain，不是完整 Merkle Tree。它没有把多个 children 聚合成一个 Merkle root，也没有 sibling proof；它更适合当前项目的 A2A 单路径溯源和审计需求。
@@ -302,7 +337,8 @@ Gateway 在 A2A 委托前校验：
 
 - `content_hash` 可重算。
 - `credential_id` 可重算。
-- `signature` 可用 `issuer_id` 公钥验证。
+- `signature` 可用 `issuer_did` 解析公钥验证（DID 交叉验证）。
+- `proof_verification_method` 指向 issuer DID 的验证方法。
 - current credential 未 revoked、未 expired。
 - parent/root credential 存在。
 - parent/root 未 revoked、未 expired。
@@ -318,10 +354,12 @@ Gateway 在 A2A 委托前校验：
 能力授权使用交集：
 
 ```text
+target_caps = Agent VC capabilities（优先）或 agents.static_capabilities（回退）
+
 effective_capabilities =
     requested_capabilities
     ∩ caller_token_capabilities
-    ∩ target_agent_static_capabilities
+    ∩ target_caps
     ∩ delegated_user_capabilities
 ```
 
@@ -439,7 +477,7 @@ Authorization: Bearer <user_token>
 5. 生成 root intent commitment。
 6. 使用 delegated user key 签名 root intent node。
 7. 校验并记录 root intent。
-8. 基于用户 root credential 构建 user -> first agent child credential。
+8. 基于用户 root credential 构建 user -> first agent child credential（`issuer=auth_context.agent_id`, `subject=target_agent_id`，由用户私钥签名委托）。
 9. 记录 root delegation hop 和 allow audit。
 10. 将注入 auth context、root hop、root intent 的 envelope 转发给首个 Agent。
 
@@ -617,9 +655,12 @@ GET /audit/logs
 | 表 | 说明 |
 | --- | --- |
 | `agents` | Agent registry，包含 endpoint、状态、静态能力和元数据 |
+| `did_documents` | DID Document 存储，身份白名单 |
+| `capabilities` | 能力字典，权威合法能力名称列表 |
+| `capability_policies` | 能力审批策略，按 subject_type + agent_type 设定能力天花板 |
 | `tokens` | token 登记、过期、撤销、绑定 root credential |
 | `jti_seen` | 已验证过的 jti 首次出现时间 |
-| `delegation_credentials` | signed credential 链 |
+| `delegation_credentials` | signed credential 链（含委托 VC 和 Agent Capability VC） |
 | `audit_logs` | 授权/拒绝审计 |
 | `delegation_chain` | 人类可读委托链摘要 |
 | `auth_events` | Bearer token 身份验证审计 |
@@ -643,31 +684,37 @@ GET /health
 ### 12.2 Registry
 
 ```text
-POST /registry/agents
-GET /registry/agents
-GET /registry/agents/{agent_id}
+POST   /registry/agents                    # 注册 Agent（含能力审批）
+GET    /registry/agents                    # 列出 Agent（支持 ?capability=X 过滤）
+GET    /registry/agents/{agent_id}         # 获取单个 Agent
+GET    /registry/agents/{agent_id}/vc      # 获取 Agent Capability VC（可独立验签）
+GET    /registry/capabilities              # 获取全部可申请能力
+POST   /registry/capabilities              # 新增能力到字典
+DELETE /registry/capabilities/{name}       # 删除能力
+GET    /registry/capability-policies       # 查看能力审批策略
+PUT    /registry/capability-policies       # 更新能力审批策略
 ```
 
-`POST /registry/agents` 请求字段：
+`POST /registry/agents` 关键字段：
 
-- `agent_id`
-- `name`
-- `agent_type`
-- `endpoint`
-- `description`
-- `owner_org`
-- `allowed_resource_domains`
-- `static_capabilities`
-- `status`
+- `agent_id`、`name`、`agent_type`、`endpoint`
+- `requested_capabilities`：注册方请求的能力列表（必填）
+- `static_capabilities`：向后兼容字段，回退到 `requested_capabilities`
+
+注册响应新增：
+
+- `decision`：`"approved"` | `"modified"` | `"denied"`
+- `requested_capabilities`、`granted_capabilities`、`missing_capabilities`
+- `agent_vc_id`：签发的 Agent VC ID
 
 ### 12.3 Identity
 
 ```text
-POST /identity/tokens
-POST /identity/tokens/introspect
-GET /identity/public-key/{key_id}
-POST /identity/tokens/{jti}/revoke
-```
+POST /identity/did-register              # DID Document 注册（含 proof 验证）
+POST /identity/tokens                    # Token 签发（需 DID 已注册）
+POST /identity/tokens/introspect         # Token introspection
+GET  /identity/public-key/{key_id}       # 获取 RSA 公钥
+POST /identity/tokens/{jti}/revoke       # Token 吊销（级联撤销凭证）
 
 签发 token 示例：
 
@@ -741,17 +788,22 @@ Agent 请求由 `app/sdk/client.py` 构造，携带 `DelegationEnvelope` 和 age
 | `BUIAM_DEMO_USER_ID` | Demo 用户 ID |
 | `BUIAM_DEMO_KEEP_SERVERS` | demo 结束后是否保留脚本启动服务 |
 | `BUIAM_DB_PATH` | SQLite 数据库路径 |
-| `BUIAM_KEY_DIR` | 开发版 RSA key 目录 |
+| `BUIAM_KEY_DIR` | 开发版 RSA/ML-DSA key 目录 |
+| `BUIAM_USE_MLDSA` | 启用 ML-DSA 后量子签名（`true`/`false`，默认 `false`） |
+| `BUIAM_AUTH_SIGNATURE_ALG` | 签名算法（`BUIAM-RS256` 或 `BUIAM-MLDSA-65`） |
+| `BUIAM_MLDSA_ALG` | ML-DSA 算法变体（默认 `ML-DSA-65`） |
+| `BUIAM_AGENT_PROVIDER_MODE` | Agent provider 模式（`mock`/`lark_cli`） |
 | `DOC_AGENT_ENDPOINT` | doc_agent endpoint |
 | `ENTERPRISE_DATA_AGENT_ENDPOINT` | enterprise_data_agent endpoint |
 | `EXTERNAL_SEARCH_AGENT_ENDPOINT` | external_search_agent endpoint |
 | `A2A_FORWARD_TIMEOUT_SECONDS` | Gateway 转发超时 |
 | `A2A_AGENT_TOKEN_TTL_SECONDS` | SDK 自动申请 agent token 最大 TTL |
-| `LLM_PROVIDER` | 默认 LLM provider |
+| `LLM_PROVIDER` | 默认 LLM provider（`mock`/`openai`/`anthropic`） |
 | `INTENT_GENERATOR_PROVIDER` | 意图生成 provider |
 | `INTENT_JUDGE_PROVIDER` | 意图 judge provider |
 | `OPENAI_*` | OpenAI-compatible 配置 |
 | `ANTHROPIC_*` | Anthropic-compatible 配置 |
+| `BUIAM_LARK_CLI_*` | lark-cli provider 配置 |
 | `BUIAM_SECURITY_*` | 安全验证脚本参数 |
 
 默认 provider 为 `mock`，无需外部密钥即可跑通 demo 和测试。
@@ -799,23 +851,32 @@ uvicorn examples.agent.external_search_service:app --port 8013
 - A2A Bearer 缺失、伪造、主体不一致、user token 冒充 agent、未知 target agent。
 - credential 和 intent 签名不可抵赖。
 
-### 14.4 人工安全验证脚本
+### 14.4 安全测试
+
+所有安全测试统一在 `tests/security/` 下通过 pytest 运行：
 
 ```bash
-python scripts/security/verify_delegation_chain.py
-python scripts/security/verify_intent_chain.py
-python scripts/security/find_security_node.py
-python scripts/security/verify_chain_binding.py
-python scripts/security/verify_token_lifecycle.py
-python scripts/security/verify_a2a_identity.py
-python scripts/security/run_all_security_checks.py
+.venv\Scripts\python.exe -m pytest tests/security/ -v -p no:cacheprovider
+.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider
+
+# DID/Token/VC 端到端 JSON 输出
+.venv\Scripts\python.exe -m pytest tests/security/test_identity_vc_presentation.py -s --json -p no:cacheprovider
 ```
 
-脚本解释文档：
+测试分类：
 
-```text
-scripts/security/SECURITY_CHECKS_EXPLAINED.md
-```
+| 测试文件 | 覆盖 |
+|---------|------|
+| `test_delegation_chain.py` | 委托链构造、7 种篡改、跨 trace、可恢复错误、suggested_agents |
+| `test_intent_chain.py` | 意图链、5 种篡改、意图漂移 |
+| `test_chain_binding.py` | credential/intent/audit 绑定、跨 trace 拒绝 |
+| `test_a2a_identity.py` | Bearer 校验、subject 匹配、actor type、unknown target |
+| `test_token_lifecycle.py` | 过期、吊销、级联、任务取消 |
+| `test_audit_non_repudiation.py` | 签名证明、审计完整性 |
+| `test_did_registration.py` | DID 注册、格式验证、proof、JWK、DID→Token 联动 |
+| `test_failure_handling.py` | FATAL/recoverable 分级、suggested_agents、审计缺口 |
+| `test_identity_vc_presentation.py` | DID/Token/VC 端到端 JSON 输出 |
+| `test_agent_vc.py` | Agent VC 签发、发现、审批、策略 CRUD |
 
 ## 15. 典型安全场景
 
@@ -905,22 +966,28 @@ AUTH_TOKEN_EXPIRED
 - Bearer token 是调用进程身份来源。
 - signed credential 链是授权事实来源。
 - signed intent 链是意图事实来源。
+- **Agent Capability VC 是 Agent 能力的权威来源**，优先于 `agents.static_capabilities`。
+- **能力审批策略必须强制执行**，Agent 注册时 capability 必须经过 `evaluate_capability_request()`。
+- **DID Document 是身份白名单**，Token 签发前必须检查 DID 已注册。
 - `delegation_chain` 不能参与安全决策。
 - child credential 能力不得超过 parent。
 - child credential 过期时间不得晚于 parent。
+- **委托凭证必须由 issuer（授权方）签名**，不得自签发。
 - credential 与 intent 必须绑定同一 trace。
 - A2A Bearer subject 必须匹配当前 credential subject。
 - Token revoke 必须级联 revoke credential tree。
 - Token revoke 必须取消相关 trace 的运行中任务。
 - Token/credential 过期不得主动取消已经开始的任务。
-- 失败请求也要尽量记录 deny audit 和 auth event。
+- **所有失败路径必须写 audit log**，无例外。
+- **错误响应必须区分 FATAL 和 recoverable**，能力不足类必须标记 `recoverable=true`。
 
 ## 17. 当前限制
 
-- RSA/JWT 实现是开发版简化实现，不是生产级密码库封装。
+- RSA/ML-DSA 实现是开发版简化实现，不是生产级密码库封装。
 - SQLite 适合 demo 和本地验证，生产建议替换为 PostgreSQL/MySQL 等托管数据库。
 - 运行中任务取消目前只支持单进程内 asyncio task registry。
 - 当前 capability 是静态字符串集合，尚未支持资源级策略、ABAC/RBAC 或策略 DSL。
+- Gateway 在签发 Token/凭证时需访问实体私钥（custodial demo 模型），生产应改为客户端自签名。
 - 当前未在网络层强制阻止 Agent 直接互连，生产应配合服务网格、mTLS、网络策略或 Gateway-only ingress。
 - 当前业务执行是 mock provider，真实飞书 API 接入仍需替换 Agent provider 层。
 - 当前 hash chain 不是完整 Merkle Tree，不提供 sibling proof 或批量 Merkle root。
@@ -929,11 +996,12 @@ AUTH_TOKEN_EXPIRED
 
 ### 18.1 生产级身份与密钥
 
-- 替换开发版 RSA 为标准 JWS/JWT 库。
+- 替换开发版 RSA/ML-DSA 为标准 JWS/JWT 库与 liboqs 生产绑定。
 - 引入 JWKS、KMS 或 HSM。
 - 支持 key rotation。
 - 支持 mTLS 绑定 Agent 身份。
 - 支持标准 OAuth2 Token Exchange 或短 token + refresh token。
+- 客户端自签名 Token/凭证（去除 Gateway 托管私钥）。
 
 ### 18.2 分布式任务撤销
 
