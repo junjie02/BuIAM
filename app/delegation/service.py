@@ -10,7 +10,7 @@ from app.identity.did import build_did, build_verification_method_id
 from app.protocol import DelegationDecision, DelegationEnvelope, DelegationHop
 from app.store.audit import record_decision
 from app.store.delegation_credentials import get_credential, upsert_credential
-from app.store.registry import get_agent
+from app.store.registry import find_agents_with_capabilities, get_agent
 
 
 class CredentialValidationError(Exception):
@@ -23,25 +23,36 @@ class CredentialValidationError(Exception):
 class DelegationService:
     def authorize(self, envelope: DelegationEnvelope) -> DelegationDecision:
         requested_for_error = sorted(envelope.requested_capabilities)
+        _denied = lambda **kw: DelegationDecision(
+            decision="deny",
+            effective_capabilities=[],
+            missing_capabilities=requested_for_error,
+            requested_capabilities=requested_for_error,
+            **kw,
+        )
+
         target_agent = get_agent(envelope.target_agent_id)
         if target_agent is None:
-            return DelegationDecision(decision="deny", reason=f"unknown target agent: {envelope.target_agent_id}", effective_capabilities=[], missing_capabilities=requested_for_error, requested_capabilities=requested_for_error)
+            return _denied(
+                reason=f"unknown target agent: {envelope.target_agent_id}",
+                recoverable=False,
+            )
 
         target_caps = target_agent.static_capabilities
         auth_context = envelope.auth_context
         if auth_context is None:
-            return DelegationDecision(decision="deny", reason="missing trusted auth context", effective_capabilities=[], missing_capabilities=requested_for_error, requested_capabilities=requested_for_error)
+            return _denied(reason="missing trusted auth context", recoverable=False)
 
         if auth_context.sub != envelope.caller_agent_id or auth_context.agent_id != envelope.caller_agent_id:
-            return DelegationDecision(decision="deny", reason="auth context subject does not match caller agent", effective_capabilities=[], missing_capabilities=requested_for_error, requested_capabilities=requested_for_error)
+            return _denied(reason="auth context subject does not match caller agent", recoverable=False)
 
         if not self.is_chain_continuous(envelope):
-            return DelegationDecision(decision="deny", reason="delegation chain is not continuous with caller agent", effective_capabilities=[], missing_capabilities=requested_for_error, requested_capabilities=requested_for_error)
+            return _denied(reason="delegation chain is not continuous with caller agent", recoverable=False)
 
         try:
             self.validate_auth_context_credential(auth_context)
         except CredentialValidationError as error:
-            return DelegationDecision(decision="deny", reason=f"{error.error_code}: {error.message}", effective_capabilities=[], missing_capabilities=requested_for_error, requested_capabilities=requested_for_error)
+            return _denied(reason=f"{error.error_code}: {error.message}", recoverable=False)
 
         try:
             known_caps = known_capabilities()
@@ -49,12 +60,18 @@ class DelegationService:
             caller_token_caps = parse_capabilities(auth_context.capabilities, known_caps)
             delegated_user_caps = parse_capabilities(auth_context.user_capabilities or auth_context.capabilities, known_caps)
         except ValueError as error:
-            return DelegationDecision(decision="deny", reason=str(error), effective_capabilities=[], missing_capabilities=requested_for_error, requested_capabilities=requested_for_error)
+            return _denied(reason=str(error), recoverable=True)
 
         effective = intersect_capabilities(caller_token_caps, target_caps, requested, delegated_user_caps)
         missing = requested - effective
         missing_by = self.build_missing_by(requested=requested, caller_token_caps=caller_token_caps, target_caps=target_caps, delegated_user_caps=delegated_user_caps)
         if missing:
+            target_missing = missing_by.get("target_agent", [])
+            suggested_agents: list[dict[str, str]] = []
+            if target_missing:
+                suggested_agents = find_agents_with_capabilities(
+                    target_missing, exclude_agent_id=envelope.target_agent_id
+                )
             return DelegationDecision(
                 decision="deny",
                 reason=f"requested capabilities not covered by token, target, request, and user intersection: {sorted(missing)}",
@@ -65,6 +82,8 @@ class DelegationService:
                 target_agent_capabilities=sorted(target_caps),
                 user_capabilities=sorted(delegated_user_caps),
                 missing_by=missing_by,
+                recoverable=True,
+                suggested_agents=[a["agent_id"] for a in suggested_agents],
             )
 
         return DelegationDecision(
@@ -77,6 +96,7 @@ class DelegationService:
             target_agent_capabilities=sorted(target_caps),
             user_capabilities=sorted(delegated_user_caps),
             missing_by=missing_by,
+            recoverable=True,
         )
 
     def build_missing_by(self, *, requested: set[str], caller_token_caps: set[str], target_caps: set[str] | frozenset[str], delegated_user_caps: set[str] | frozenset[str]) -> dict[str, list[str]]:
@@ -202,5 +222,7 @@ def raise_for_denied(decision: DelegationDecision) -> None:
                 "effective_capabilities": decision.effective_capabilities,
                 "missing_capabilities": decision.missing_capabilities,
                 "missing_by": decision.missing_by,
+                "recoverable": decision.recoverable,
+                "suggested_agents": decision.suggested_agents,
             },
         )

@@ -68,6 +68,8 @@ class DecisionDetail(BaseModel):
     intent_judge_reason: str | None = None
     decision: Literal["allow", "deny"]
     reason: str
+    recoverable: bool = False
+    suggested_agents: list[str] = Field(default_factory=list)
 
 
 class AuthContext(BaseModel):
@@ -155,6 +157,8 @@ class DelegationDecision(BaseModel):
     intent_generation_model: str | None = None
     intent_judge_decision: str | None = None
     intent_judge_reason: str | None = None
+    recoverable: bool = False
+    suggested_agents: list[str] = Field(default_factory=list)
 
     def to_detail(self) -> DecisionDetail:
         return DecisionDetail(
@@ -176,6 +180,8 @@ class DelegationDecision(BaseModel):
             intent_judge_reason=self.intent_judge_reason,
             decision=self.decision,
             reason=self.reason,
+            recoverable=self.recoverable,
+            suggested_agents=list(self.suggested_agents),
         )
 
 

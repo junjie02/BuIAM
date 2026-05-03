@@ -147,3 +147,30 @@ def _decode_domains(raw: str) -> list[str]:
     except json.JSONDecodeError:
         decoded = raw.split(",")
     return [str(domain) for domain in decoded if str(domain)]
+
+
+def find_agents_with_capabilities(
+    required_capabilities: list[str],
+    *,
+    exclude_agent_id: str | None = None,
+    db_path: Path = DB_PATH,
+) -> list[dict[str, str]]:
+    """Return agents (id + endpoint) that have at least one of the required capabilities.
+
+    Excludes the agent specified by *exclude_agent_id* and inactive agents.
+    Used to provide recovery hints when a delegation is denied due to missing
+    target-agent capabilities.
+    """
+    if not required_capabilities:
+        return []
+    agents = list_agents(db_path=db_path)
+    required = frozenset(required_capabilities)
+    results: list[dict[str, str]] = []
+    for agent in agents:
+        if agent.status != "active":
+            continue
+        if exclude_agent_id is not None and agent.agent_id == exclude_agent_id:
+            continue
+        if agent.static_capabilities & required:
+            results.append({"agent_id": agent.agent_id, "endpoint": agent.endpoint})
+    return results

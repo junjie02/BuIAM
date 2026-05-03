@@ -114,10 +114,11 @@ def test_user_token_cannot_be_used_as_agent_call_identity(servers) -> None:
 
 def test_unknown_target_agent_is_rejected(servers) -> None:
     token = issue_agent_token("doc_agent", capabilities=ALL_CAPABILITIES)
+    trace_id = str(uuid4())
     response = httpx.post(
         f"{GATEWAY_URL}/a2a/agents/not_registered/tasks",
         json=agent_envelope(
-            trace_id=str(uuid4()),
+            trace_id=trace_id,
             caller_agent_id="doc_agent",
             target_agent_id="not_registered",
             task_type="read_enterprise_data",
@@ -130,3 +131,8 @@ def test_unknown_target_agent_is_rejected(servers) -> None:
 
     assert response.status_code == 404
     assert response.json()["detail"]["error_code"] == "AGENT_NOT_REGISTERED"
+    # Audit gap fix: unknown agent rejection should now write an audit record
+    trace = httpx.get(f"{GATEWAY_URL}/audit/traces/{trace_id}", timeout=10).json()
+    deny_logs = [log for log in trace["logs"] if log["decision"] == "deny"]
+    assert deny_logs, "AGENT_NOT_REGISTERED should produce an audit log (gap fix)"
+    assert any("AGENT_NOT_REGISTERED" in log["reason"] for log in deny_logs)

@@ -42,12 +42,13 @@ async def root_task(
     token_result = verify_bearer_for_envelope(envelope=provisional, authorization=authorization)
     auth_context = token_result.auth_context
     if auth_context.actor_type != "user":
+        record_decision(provisional, auth_failure_decision("AUTH_ACTOR_TYPE_INVALID", "root task requires a user token", provisional))
         raise HTTPException(
             status_code=403,
             detail={"error_code": "AUTH_ACTOR_TYPE_INVALID", "message": "root task requires a user token"},
         )
 
-    target = get_active_agent(request.target_agent_id)
+    target = get_active_agent(request.target_agent_id, envelope=provisional)
     generated = await generate_root_intent(request=request, auth_context=auth_context)
     root_node = build_signed_intent_node(
         parent_node_id=None,
@@ -127,7 +128,7 @@ async def agent_task(
     envelope: DelegationEnvelope,
     authorization: str | None = Header(default=None),
 ) -> AgentTaskResponse:
-    target = get_active_agent(target_agent_id)
+    target = get_active_agent(target_agent_id, envelope=envelope)
     token_result = verify_bearer_for_envelope(envelope=envelope, authorization=authorization)
     try:
         auth_context = trusted_auth_context_for_envelope(envelope, token_result.auth_context)
@@ -202,6 +203,17 @@ async def agent_task(
     try:
         authorized = delegation_service.append_hop(trusted, decision.effective_capabilities)
     except CredentialValidationError as error:
+        record_decision(
+            trusted,
+            DelegationDecision(
+                decision="deny",
+                reason=f"{error.error_code}: {error.message}",
+                effective_capabilities=[],
+                missing_capabilities=decision.effective_capabilities or [],
+                requested_capabilities=decision.requested_capabilities,
+                recoverable=False,
+            ),
+        )
         raise http_error(error.error_code, error.message) from error
 
     try:
@@ -222,11 +234,15 @@ async def agent_task(
         raise
 
 
-def get_active_agent(agent_id: str):
+def get_active_agent(agent_id: str, *, envelope: DelegationEnvelope | None = None):
     agent = get_agent(agent_id)
     if agent is None:
+        if envelope is not None:
+            record_decision(envelope, auth_failure_decision("AGENT_NOT_REGISTERED", f"agent {agent_id} is not registered", envelope))
         raise HTTPException(status_code=404, detail={"error_code": "AGENT_NOT_REGISTERED", "agent_id": agent_id})
     if agent.status != "active":
+        if envelope is not None:
+            record_decision(envelope, auth_failure_decision("AGENT_INACTIVE", f"agent {agent_id} is inactive", envelope))
         raise HTTPException(status_code=403, detail={"error_code": "AGENT_INACTIVE", "agent_id": agent_id})
     return agent
 
