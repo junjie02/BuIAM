@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import os
 
+from app.delegation.credential_crypto import build_agent_capability_vc
 from app.identity.did import build_did, build_did_document
-from app.identity.keys import ensure_agent_keypair
+from app.identity.keys import ensure_agent_keypair, ensure_system_keypair
+from app.store.delegation_credentials import upsert_credential
 from app.store.did_registry import get_did_document, upsert_did_document
 from app.store.registry import upsert_agent
 
@@ -108,6 +110,13 @@ def register_agent_metadata() -> int:
 
     Returns the number of agents registered.
     """
+    ensure_system_keypair()
+    # Ensure the Gateway system identity has a DID document for signing Agent VCs
+    from app.delegation.credential_crypto import GATEWAY_SYSTEM_ID
+    system_did = build_did(GATEWAY_SYSTEM_ID)
+    if get_did_document(system_did) is None:
+        system_doc = build_did_document(GATEWAY_SYSTEM_ID)
+        upsert_did_document(did=system_did, subject_id=GATEWAY_SYSTEM_ID, document=system_doc)
     registered = 0
     for agent in DEMO_AGENTS:
         agent_id = str(agent["agent_id"])
@@ -131,6 +140,15 @@ def register_agent_metadata() -> int:
             endpoint=endpoint,
             static_capabilities=list(agent["static_capabilities"]),
         )
+        # Issue Agent Capability VC signed by the Gateway system identity
+        vc = build_agent_capability_vc(
+            agent_id=agent_id,
+            capabilities=list(agent["static_capabilities"]),
+            endpoint=endpoint,
+            agent_type=str(agent["agent_type"]),
+        )
+        upsert_credential(vc)
+        logger.info("Issued Agent Capability VC for %s: %s", agent_id, vc.credential_id)
         registered += 1
     return registered
 

@@ -80,6 +80,23 @@ def get_credential(credential_id: str, db_path: Path = DB_PATH) -> DelegationCre
     return credential_from_row(row) if row is not None else None
 
 
+def get_credential_by_subject_and_type(subject_id: str, vc_type: list[str], db_path: Path = DB_PATH) -> DelegationCredential | None:
+    """Find the latest credential for *subject_id* whose vc_type matches.
+
+    Used to retrieve Agent Capability VCs. Returns the most recently issued
+    (highest iat) matching credential.
+    """
+    init_schema(db_path)
+    type_marker = vc_type[-1] if vc_type else ""
+    with sqlite3.connect(db_path) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT * FROM delegation_credentials WHERE subject_id = ? AND vc_type LIKE ? ORDER BY iat DESC LIMIT 1",
+            (subject_id, f"%{type_marker}%"),
+        ).fetchone()
+    return credential_from_row(row) if row is not None else None
+
+
 def list_credentials(*, trace_id: str | None = None, root_credential_id: str | None = None, db_path: Path = DB_PATH) -> list[DelegationCredential]:
     init_schema(db_path)
     query = "SELECT * FROM delegation_credentials"

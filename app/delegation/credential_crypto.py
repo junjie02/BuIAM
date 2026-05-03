@@ -10,6 +10,8 @@ from app.protocol import AuthContext, DelegationCredential
 ROOT_CREDENTIAL_PARENT = "ROOT"
 VC_CONTEXT = ["https://www.w3.org/2018/credentials/v1", "https://buiam.local/credentials/delegation/v1"]
 VC_TYPE = ["VerifiableCredential", "BuIAMDelegationCredential"]
+AGENT_VC_TYPE = ["VerifiableCredential", "BuIAMAgentCapabilityCredential"]
+GATEWAY_SYSTEM_ID = "buiam-auth-system"
 
 
 def current_signature_alg() -> str:
@@ -144,3 +146,78 @@ def auth_context_from_credential(credential: DelegationCredential, *, jti: str |
         root_credential_id=credential.root_credential_id,
         sig=credential.proof_signature or credential.signature,
     )
+
+
+def build_agent_capability_vc(
+    *,
+    agent_id: str,
+    capabilities: list[str],
+    endpoint: str,
+    agent_type: str = "other",
+    ttl_days: int = 30,
+) -> DelegationCredential:
+    """Issue an Agent Capability VC signed by the Gateway system identity.
+
+    This VC declares what capabilities an agent possesses and where it can be
+    reached. It is the cryptographically-verifiable equivalent of the
+    ``static_capabilities`` column — other agents can verify the VC signature
+    to confirm the agent's capabilities without trusting the database directly.
+    """
+    now = int(time.time())
+    exp = now + ttl_days * 86400
+    agent_did = build_did(agent_id)
+    issuer_did = build_did(GATEWAY_SYSTEM_ID)
+    proof_vm = build_verification_method_id(issuer_did)
+    signature_alg = current_signature_alg()
+    credential_subject = {
+        "id": agent_did,
+        "subject_id": agent_id,
+        "capabilities": sorted(capabilities),
+        "service_endpoint": endpoint,
+        "agent_type": agent_type,
+    }
+    unsigned = DelegationCredential(
+        credential_id="",
+        parent_credential_id=None,
+        root_credential_id="",
+        issuer_id=GATEWAY_SYSTEM_ID,
+        subject_id=agent_id,
+        issuer_did=issuer_did,
+        subject_did=agent_did,
+        delegated_user=agent_id,
+        capabilities=sorted(capabilities),
+        user_capabilities=sorted(capabilities),
+        iat=now,
+        exp=exp,
+        trace_id=None,
+        request_id=None,
+        vc_context=VC_CONTEXT,
+        vc_type=AGENT_VC_TYPE,
+        credential_subject=credential_subject,
+        proof_verification_method=proof_vm,
+        proof_signature="",
+        content_hash="",
+        signature="",
+        signature_alg=signature_alg,
+    )
+    signed_content = canonical_json(credential_self_content(unsigned))
+    if signature_alg.startswith("BUIAM-MLDSA"):
+        proof_signature = mldsa_sign_with_kid(signed_content, proof_vm)
+    else:
+        proof_signature = rsa_sign_with_kid(signed_content, proof_vm)
+    signed = unsigned.model_copy(update={
+        "content_hash": sha256_hex(signed_content),
+        "proof_signature": proof_signature,
+        "signature": proof_signature,
+    })
+    credential_id = compute_credential_id(signed)
+    return signed.model_copy(update={
+        "credential_id": credential_id,
+        "root_credential_id": credential_id,
+    })
+
+
+def get_agent_vc(agent_id: str) -> DelegationCredential | None:
+    """Retrieve the Agent Capability VC for *agent_id* from the credential store."""
+    from app.store.delegation_credentials import get_credential_by_subject_and_type
+    return get_credential_by_subject_and_type(agent_id, AGENT_VC_TYPE)

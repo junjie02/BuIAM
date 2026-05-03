@@ -5,7 +5,7 @@ import time
 from fastapi import HTTPException
 
 from app.delegation.capabilities import intersect_capabilities, known_capabilities, parse_capabilities
-from app.delegation.credential_crypto import auth_context_from_credential, build_delegation_credential, verify_credential_integrity
+from app.delegation.credential_crypto import auth_context_from_credential, build_delegation_credential, get_agent_vc, verify_credential_integrity
 from app.identity.did import build_did, build_verification_method_id
 from app.protocol import DelegationDecision, DelegationEnvelope, DelegationHop
 from app.store.audit import record_decision
@@ -38,7 +38,12 @@ class DelegationService:
                 recoverable=False,
             )
 
-        target_caps = target_agent.static_capabilities
+        agent_vc = get_agent_vc(envelope.target_agent_id)
+        target_caps: set[str] | frozenset[str]
+        if agent_vc is not None:
+            target_caps = frozenset(agent_vc.capabilities)
+        else:
+            target_caps = target_agent.static_capabilities
         auth_context = envelope.auth_context
         if auth_context is None:
             return _denied(reason="missing trusted auth context", recoverable=False)
