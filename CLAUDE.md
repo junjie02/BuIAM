@@ -42,11 +42,11 @@ Never let pytest scan `third_party/liboqs/tests` — always scope to `tests`.
 .venv\Scripts\python.exe -m pytest tests/test_a2a_security_demo.py -q -p no:cacheprovider
 ```
 
-**Run security verification scripts:**
+**Run security tests:**
 
 ```powershell
-python scripts/security/run_all_security_checks.py
-python scripts/security/verify_identity_vc.py --json
+.venv\Scripts\python.exe -m pytest tests/security/ -v -p no:cacheprovider
+.venv\Scripts\python.exe -m pytest tests/security/test_identity_vc_presentation.py -s --json -p no:cacheprovider
 ```
 
 **Manual 4-terminal startup:**

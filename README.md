@@ -156,32 +156,40 @@ $env:INTENT_JUDGE_PROVIDER='mock'
 当前本地基线：
 
 ```text
-42 passed
+63 passed
 ```
 
-## 安全验证脚本
+## 安全测试
+
+所有安全测试统一在 `tests/security/` 下，直接通过 pytest 运行：
 
 ```powershell
-python scripts/security/verify_delegation_chain.py
-python scripts/security/verify_intent_chain.py
-python scripts/security/verify_chain_binding.py
-python scripts/security/verify_token_lifecycle.py
-python scripts/security/verify_a2a_identity.py
-python scripts/security/verify_identity_vc.py --json
-python scripts/security/run_all_security_checks.py
+# 全部安全测试
+.venv\Scripts\python.exe -m pytest tests/security/ -v -p no:cacheprovider
+
+# 完整回归
+.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider
+
+# DID/Token/VC 端到端，输出完整 JSON
+.venv\Scripts\python.exe -m pytest tests/security/test_identity_vc_presentation.py -s --json -p no:cacheprovider
 ```
 
-其中 `verify_identity_vc.py --json` 会输出：
+## 技术文档
 
-- 验证流程；
-- 已注册的 DID Documents；
-- 解码后的 token header 和 claims；
-- token introspection 结果；
-- root VC 形态凭证；
-- 委托给 Agent 的 VC 形态凭证；
-- 重算后的 `content_hash`；
-- 重算后的 `credential_id`；
-- proof 签名验证结果。
+按安全功能分类的技术文档见 `docs/`：
+
+| 文档 | 内容 |
+|------|------|
+| [01-architecture-overview](docs/01-architecture-overview.md) | 系统架构总览 |
+| [02-identity-did-vc](docs/02-identity-did-vc.md) | DID 身份体系与 VC |
+| [03-delegation-credentials](docs/03-delegation-credentials.md) | 委托凭证链 |
+| [04-intent-chain](docs/04-intent-chain.md) | 意图链 |
+| [05-token-lifecycle](docs/05-token-lifecycle.md) | Token 生命周期 |
+| [06-audit-and-non-repudiation](docs/06-audit-and-non-repudiation.md) | 审计与不可抵赖 |
+| [07-error-handling](docs/07-error-handling.md) | 错误处理分级 |
+| [08-post-quantum-mldsa](docs/08-post-quantum-mldsa.md) | 后量子密码 ML-DSA |
+| [09-provider-and-feishu](docs/09-provider-and-feishu.md) | Provider 模式与飞书集成 |
+| [10-testing-and-security](docs/10-testing-and-security.md) | 测试架构与安全验证 |
 
 ## lark-cli Provider 模式
 

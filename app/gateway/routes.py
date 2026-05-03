@@ -94,7 +94,19 @@ async def root_task(
             request_id=request_id,
         )
     except CredentialValidationError as error:
-        raise http_error(error.error_code, error.message) from error
+        recoverable = _credential_error_recoverable(error)
+        record_decision(
+            trusted,
+            DelegationDecision(
+                decision="deny",
+                reason=f"{error.error_code}: {error.message}",
+                effective_capabilities=[],
+                missing_capabilities=request.requested_capabilities,
+                requested_capabilities=request.requested_capabilities,
+                recoverable=recoverable,
+            ),
+        )
+        raise http_error(error.error_code, error.message, recoverable=recoverable) from error
 
     decision = DelegationDecision(
         decision="allow",
@@ -203,6 +215,7 @@ async def agent_task(
     try:
         authorized = delegation_service.append_hop(trusted, decision.effective_capabilities)
     except CredentialValidationError as error:
+        recoverable = _credential_error_recoverable(error)
         record_decision(
             trusted,
             DelegationDecision(
@@ -211,10 +224,10 @@ async def agent_task(
                 effective_capabilities=[],
                 missing_capabilities=decision.effective_capabilities or [],
                 requested_capabilities=decision.requested_capabilities,
-                recoverable=False,
+                recoverable=recoverable,
             ),
         )
-        raise http_error(error.error_code, error.message) from error
+        raise http_error(error.error_code, error.message, recoverable=recoverable) from error
 
     try:
         return await forward_to_agent(target.endpoint, authorized)
@@ -509,5 +522,13 @@ def auth_failure_decision(error_code: str, message: str, envelope: DelegationEnv
     )
 
 
-def http_error(error_code: str, message: str) -> HTTPException:
-    return HTTPException(status_code=403, detail={"error_code": error_code, "message": message})
+def http_error(error_code: str, message: str, *, recoverable: bool | None = None) -> HTTPException:
+    detail: dict = {"error_code": error_code, "message": message}
+    if recoverable is not None:
+        detail["recoverable"] = recoverable
+    return HTTPException(status_code=403, detail=detail)
+
+
+def _credential_error_recoverable(error: CredentialValidationError) -> bool:
+    """Capability-escalation errors are recoverable; integrity/replay/revocation errors are fatal."""
+    return "capabilities exceed" in error.message

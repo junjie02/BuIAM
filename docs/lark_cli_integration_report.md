@@ -10,12 +10,12 @@ validation, revocation, or audit behavior.
 
 ## Modified Areas
 
-- Added [examples/agent/provider.py](/D:/BuIAM/examples/agent/provider.py) as the provider selection layer
-- Added [examples/agent/lark_cli_provider.py](/D:/BuIAM/examples/agent/lark_cli_provider.py) as the `lark-cli` adapter
-- Updated [examples/agent/enterprise_data_agent.py](/D:/BuIAM/examples/agent/enterprise_data_agent.py) to read enterprise data through the configurable provider
-- Updated [examples/agent/doc_agent.py](/D:/BuIAM/examples/agent/doc_agent.py) to create documents through the configurable provider and propagate downstream provider failures
-- Added [tests/test_agent_providers.py](/D:/BuIAM/tests/test_agent_providers.py) for provider selection and normalization coverage
-- Updated [.env.example](/D:/BuIAM/.env.example) and [README.md](/D:/BuIAM/README.md) with configuration and usage notes
+- Added [examples/agent/provider.py](examples/agent/provider.py) as the provider selection layer
+- Added [examples/agent/lark_cli_provider.py](examples/agent/lark_cli_provider.py) as the `lark-cli` adapter
+- Updated [examples/agent/enterprise_data_agent.py](examples/agent/enterprise_data_agent.py) to read enterprise data through the configurable provider
+- Updated [examples/agent/doc_agent.py](examples/agent/doc_agent.py) to create documents through the configurable provider and propagate downstream provider failures
+- Added [tests/test_agent_providers.py](tests/test_agent_providers.py) for provider selection and normalization coverage
+- Updated [.env.example](.env.example) and [README.md](README.md) with configuration and usage notes
 
 ## Behavior Changes
 
