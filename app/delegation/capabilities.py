@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from app.store.registry import list_agents
+from app.store.capabilities import capability_names
 
 
 def known_capabilities() -> set[str]:
-    capabilities: set[str] = set()
-    for agent in list_agents():
-        capabilities.update(agent.static_capabilities)
-    return capabilities
+    """Return the authoritative set of known capability names (from the master list)."""
+    return capability_names()
 
 
 def parse_capabilities(

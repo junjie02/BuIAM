@@ -217,3 +217,73 @@ def init_schema(db_path: Path = DB_PATH) -> None:
             )
             """
         )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS capabilities (
+                name TEXT PRIMARY KEY,
+                description TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS capability_policies (
+                subject_type TEXT NOT NULL,
+                agent_type TEXT NOT NULL,
+                allowed_capabilities TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (subject_type, agent_type)
+            )
+            """
+        )
+    seed_capabilities(db_path)
+    seed_capability_policies(db_path)
+
+
+def seed_capabilities(db_path: Path = DB_PATH) -> None:
+    """Insert the canonical capability list from the protocol definition."""
+    from typing import get_args
+    from app.protocol import Capability
+
+    with sqlite3.connect(db_path) as connection:
+        count = connection.execute("SELECT COUNT(*) FROM capabilities").fetchone()[0]
+        if count > 0:
+            return
+    all_caps = sorted(get_args(Capability))
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            "INSERT INTO capabilities (name) VALUES (?)",
+            [(c,) for c in all_caps],
+        )
+
+
+def seed_capability_policies(db_path: Path = DB_PATH) -> None:
+    """Insert default capability policies if the table is empty."""
+    import json
+    with sqlite3.connect(db_path) as connection:
+        count = connection.execute("SELECT COUNT(*) FROM capability_policies").fetchone()[0]
+        if count > 0:
+            return
+    ALL = [
+        "report:write", "feishu.doc:write",
+        "feishu.contact:read", "feishu.calendar:read",
+        "feishu.wiki:read", "feishu.bitable:read",
+        "web.public:read",
+    ]
+    ENTERPRISE = ["feishu.contact:read", "feishu.calendar:read", "feishu.wiki:read", "feishu.bitable:read"]
+    defaults = [
+        ("user", "*", ALL),
+        ("agent", "doc_agent", ALL),
+        ("agent", "enterprise_data_agent", ENTERPRISE),
+        ("agent", "external_search_agent", ["web.public:read"]),
+        ("agent", "*", ["web.public:read"]),
+    ]
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            "INSERT INTO capability_policies (subject_type, agent_type, allowed_capabilities) VALUES (?, ?, ?)",
+            [(st, at, json.dumps(sorted(caps), ensure_ascii=False)) for st, at, caps in defaults],
+        )

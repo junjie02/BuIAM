@@ -6,6 +6,7 @@ import os
 from app.delegation.credential_crypto import build_agent_capability_vc
 from app.identity.did import build_did, build_did_document
 from app.identity.keys import ensure_agent_keypair, ensure_system_keypair
+from app.registry.policy import evaluate_capability_request
 from app.store.delegation_credentials import upsert_credential
 from app.store.did_registry import get_did_document, upsert_did_document
 from app.store.registry import upsert_agent
@@ -129,6 +130,19 @@ def register_agent_metadata() -> int:
             )
             continue
         endpoint = os.getenv(str(agent["endpoint_env"]), str(agent["default_endpoint"]))
+        requested_caps = list(agent["static_capabilities"])
+        # Run through capability approval policy
+        approval = evaluate_capability_request(
+            subject_type="agent",
+            agent_type=str(agent["agent_type"]),
+            requested=requested_caps,
+        )
+        if approval["decision"] == "denied":
+            logger.warning(
+                "Skipping agent '%s': capability request denied — %s", agent_id, approval["reason"]
+            )
+            continue
+        granted = approval["granted"]
         upsert_agent(
             agent_id=agent_id,
             name=str(agent["name"]),
@@ -138,17 +152,20 @@ def register_agent_metadata() -> int:
             allowed_resource_domains=["feishu", "public_web"],
             status="active",
             endpoint=endpoint,
-            static_capabilities=list(agent["static_capabilities"]),
+            static_capabilities=granted,
         )
-        # Issue Agent Capability VC signed by the Gateway system identity
+        # Issue Agent Capability VC with approved capabilities
         vc = build_agent_capability_vc(
             agent_id=agent_id,
-            capabilities=list(agent["static_capabilities"]),
+            capabilities=granted,
             endpoint=endpoint,
             agent_type=str(agent["agent_type"]),
         )
         upsert_credential(vc)
-        logger.info("Issued Agent Capability VC for %s: %s", agent_id, vc.credential_id)
+        logger.info(
+            "Issued Agent Capability VC for %s (%s): %s",
+            agent_id, approval["decision"], vc.credential_id,
+        )
         registered += 1
     return registered
 

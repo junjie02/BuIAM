@@ -140,4 +140,5 @@ Controlled by env vars: `BUIAM_AGENT_PROVIDER_MODE` (mock/lark_cli), `LLM_PROVID
 - Windows PowerShell syntax for all commands; `\` path separators in env var examples.
 - Never commit: `.env`, real API keys, `data/` databases, generated keypairs, `.venv`, `third_party/liboqs/build`, `third_party/liboqs/install`.
 
-**实现一个功能后，应该在tests中添加测试脚本，方便用户测试**
+**实现一个功能后，应该在tests中添加测试脚本，并更新技术方案，方便用户测试与理解**
+ 
