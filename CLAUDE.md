@@ -17,17 +17,16 @@ Activate the venv before anything else:
 **Run the demo** (auto-starts Gateway + 3 agents):
 
 ```powershell
-$env:BUIAM_AGENT_PROVIDER_MODE='mock'
 $env:LLM_PROVIDER='mock'
 $env:INTENT_GENERATOR_PROVIDER='mock'
 $env:INTENT_JUDGE_PROVIDER='mock'
+python scripts/check_lark_cli_provider.py
 python scripts/demo.py
 ```
 
 **Run tests:**
 
 ```powershell
-$env:BUIAM_AGENT_PROVIDER_MODE='mock'
 $env:LLM_PROVIDER='mock'
 $env:INTENT_GENERATOR_PROVIDER='mock'
 $env:INTENT_JUDGE_PROVIDER='mock'
@@ -112,12 +111,11 @@ Every authorization hop creates a signed `DelegationCredential` with:
 
 Root tasks and A2A calls produce signed `IntentNode` entries. The judge (LLM) checks child intent against root/parent for drift. Intent nodes are linked by `node_id` → `parent_node_id` and validated for hash integrity, signature, trace continuity, and cycle detection.
 
-### Provider Modes
+### Providers
 
-Controlled by env vars: `BUIAM_AGENT_PROVIDER_MODE` (mock/lark_cli), `LLM_PROVIDER` (mock/openai/anthropic), `INTENT_GENERATOR_PROVIDER`, `INTENT_JUDGE_PROVIDER`.
+Business Agent data uses the `lark-cli` provider directly. Intent generation/judging is controlled by `LLM_PROVIDER` (mock/openai/anthropic), `INTENT_GENERATOR_PROVIDER`, and `INTENT_JUDGE_PROVIDER`.
 
-- **mock**: Deterministic local data — always use for tests and baseline demos.
-- **lark_cli**: Calls real `lark-cli` binary to access Feishu APIs. Requires separate `lark-cli` install and auth.
+- **lark-cli**: Calls real `lark-cli` binary to access Feishu APIs. Requires separate `lark-cli` install and auth.
 - **openai/anthropic**: Real LLM providers for intent generation/judging.
 
 ### Key Env Vars (see `.env.example` for full list)

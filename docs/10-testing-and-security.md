@@ -23,7 +23,6 @@ tests/
 
 ```powershell
 # 完整回归
-$env:BUIAM_AGENT_PROVIDER_MODE='mock'
 $env:LLM_PROVIDER='mock'
 $env:INTENT_GENERATOR_PROVIDER='mock'
 $env:INTENT_JUDGE_PROVIDER='mock'

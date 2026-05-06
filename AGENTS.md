@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is a Python FastAPI implementation of the BuIAM A2A security delegation protocol. It is no longer the old MVP shape: the business Agent actions are still mock demo providers, but authentication, signed delegation credentials, intent chain validation, token revocation/expiration, task cancellation, and audit tracing are real Gateway-side security logic.
+This repository is a Python FastAPI implementation of the BuIAM A2A security delegation protocol. It is no longer the old MVP shape: business Agent actions use the real Feishu lark-cli provider, and authentication, signed delegation credentials, intent chain validation, token revocation/expiration, task cancellation, and audit tracing are real Gateway-side security logic.
 
 Core application code lives in `app/`:
 
@@ -21,9 +21,8 @@ Core application code lives in `app/`:
 Demo Agent code lives in `examples/agent/`:
 
 - `doc_agent.py` coordinates report generation and delegates enterprise data reads through A2A.
-- `enterprise_data_agent.py` returns mock enterprise data and exposes a cancellable `sleep` task for revocation tests.
-- `external_search_agent.py` returns mock public search data and demonstrates denied enterprise escalation.
-- `demo_provider.py` contains mock business action providers. Replace this provider layer when integrating real Feishu APIs; do not bypass the Gateway security chain.
+- `enterprise_data_agent.py` reads real Feishu enterprise data through lark-cli and exposes a cancellable `sleep` task for revocation tests.
+- `external_search_agent.py` returns local public search snapshots and demonstrates denied enterprise escalation.
 - `*_service.py` files expose each Agent as an independent FastAPI service with `/a2a/tasks`.
 
 Tests are in `tests/`; deeper security regression tests are in `tests/security/`. Demo and validation scripts are in `scripts/` and `scripts/security/`. Runtime local data belongs in `data/`.
@@ -125,7 +124,7 @@ For identity and VC demos, run:
 python scripts/security/verify_identity_vc.py --json
 ```
 
-This script forces deterministic mock providers, starts or reuses the local Gateway/Agents, registers DID Documents, issues a user Bearer token, introspects it, executes a root A2A task, and prints both the root token credential and delegated Agent credential in VC-shaped form with recomputed hashes and signature verification results.
+This script starts or reuses the local Gateway/Agents, registers DID Documents, issues a user Bearer token, introspects it, executes a root A2A task, and prints both the root token credential and delegated Agent credential in VC-shaped form with recomputed hashes and signature verification results.
 
 ## Configuration
 
@@ -148,7 +147,7 @@ Use `.env.example` as the source of truth for supported local environment variab
 - `ANTHROPIC_*`
 - `BUIAM_SECURITY_*`
 
-Do not commit real API keys, generated databases, generated keypairs, runtime caches, or virtual environments. The repository should remain runnable with mock providers and no external secrets.
+Do not commit real API keys, generated databases, generated keypairs, runtime caches, or virtual environments. Real Feishu access should come from local lark-cli authentication.
 
 ## Commit & Pull Request Guidelines
 

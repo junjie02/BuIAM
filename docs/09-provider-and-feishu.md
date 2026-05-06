@@ -1,65 +1,79 @@
-# Provider 模式与飞书集成
+# 飞书 Provider 集成
 
-## Provider 架构
+Demo Agent 的业务逻辑通过真实飞书 provider 层实现，Gateway 侧认证、签名委托凭证、意图链、吊销和审计逻辑不需要改动。
 
-Demo Agent 的业务逻辑通过可配置的 provider 层实现，与 Gateway 安全链路完全解耦：
-
-```
-Agent Handler (doc_agent.py)
-    │
-    ▼
-provider 层 (demo_provider.py / lark_cli_provider.py)
-    │
-    ├── mock 模式: 返回确定性的本地 mock 数据
-    └── lark_cli 模式: 通过 lark-cli 调用真实飞书 API
+```text
+Agent Handler (doc_agent.py / enterprise_data_agent.py)
+    -> provider.py
+        -> lark_cli_provider.py   通过本机 lark-cli 访问真实飞书
 ```
 
-## Provider 模式切换
+## 安装和登录 lark-cli
+
+项目使用飞书官方开源 CLI: `https://github.com/larksuite/cli`。
 
 ```powershell
-# Mock 模式 (测试和基准演示)
-$env:BUIAM_AGENT_PROVIDER_MODE='mock'
-
-# 飞书真实数据模式
-$env:BUIAM_AGENT_PROVIDER_MODE='lark_cli'
-```
-
-## lark-cli 配置
-
-安装和认证：
-```powershell
-npm install -g @larksuiteoapi/cli
+npm install -g @larksuite/cli
+lark-cli config init
 lark-cli auth login --recommend
 ```
 
-关键环境变量：
+可用下面的脚本做本地自检：
+
+```powershell
+python scripts/check_lark_cli_provider.py
+python scripts/check_lark_cli_provider.py --json
+```
+
+## 环境变量
 
 | 变量 | 说明 |
 |------|------|
-| `BUIAM_LARK_CLI_BIN` | lark-cli 可执行文件路径 (默认 `lark-cli`) |
-| `BUIAM_LARK_CLI_AS` | 飞书身份 (user/bot) |
-| `BUIAM_LARK_CLI_TIMEOUT_SECONDS` | 命令超时 |
+| `BUIAM_LARK_CLI_BIN` | `lark-cli` 可执行文件，默认 `lark-cli` |
+| `BUIAM_LARK_CLI_EXTRA_ARGS` | 传给 CLI 的额外全局参数 |
+| `BUIAM_LARK_CLI_AS` | `user` 或 `bot` |
+| `BUIAM_LARK_CLI_TIMEOUT_SECONDS` | 单次 CLI 调用超时 |
+| `BUIAM_LARK_CLI_CONTACT_QUERY` | 可选联系人查询条件 |
+| `BUIAM_LARK_CLI_CONTACT_PAGE_SIZE` | 联系人读取数量 |
+| `BUIAM_LARK_CLI_WIKI_PAGE_SIZE` | Wiki 空间读取数量 |
 | `BUIAM_LARK_CLI_BITABLE_APP_TOKEN` | 多维表格 app token |
 | `BUIAM_LARK_CLI_BITABLE_TABLE_ID` | 多维表格 table ID |
-| `BUIAM_LARK_CLI_DOC_FOLDER_TOKEN` | 文档创建目标文件夹 |
+| `BUIAM_LARK_CLI_BITABLE_PAGE_SIZE` | 多维表格读取数量 |
+| `BUIAM_LARK_CLI_DOC_FOLDER_TOKEN` | 可选文档创建目标文件夹 |
+| `BUIAM_LARK_CLI_DOC_API_VERSION` | 文档创建 API 版本，默认 `v2` |
+| `BUIAM_LARK_CLI_DOC_FORMAT` | 文档内容格式，默认 `markdown` |
 
-## 飞书 API 覆盖
+## 飞书数据覆盖
 
-| Agent | 功能 | lark-cli 命令 |
-|-------|------|--------------|
-| enterprise_data_agent | 读取通讯录 | `lark-cli contact ...` |
-| enterprise_data_agent | 读取日历 | `lark-cli calendar ...` |
-| enterprise_data_agent | 读取知识库 | `lark-cli wiki ...` |
-| enterprise_data_agent | 读取多维表格 | `lark-cli base ...` |
-| doc_agent | 创建文档 | `lark-cli doc ...` |
+`enterprise_data_agent` 会读取：
 
-## 错误处理
+- 通讯录：`api GET /open-apis/contact/v3/users`
+- 日历：`calendar +agenda`
+- Wiki：`api GET /open-apis/wiki/v2/spaces`
+- 多维表格：`api GET /open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records`
 
-Provider 层错误映射：
+`doc_agent` 会创建文档：
 
-| Provider 错误 | 含义 |
-|--------------|------|
-| `PROVIDER_MODE_INVALID` | 无效的 provider 模式配置 |
-| lark-cli 不可用 | 降级为返回不含对应数据的 enterprise snapshot |
-| lark-cli 超时 | 返回部分数据 + 警告 |
-| 多维表格配置缺失 | 返回 enterprise data sans bitable + 警告 |
+- `docs +create --api-version v2 --doc-format markdown --content ...`
+
+多维表格的 `app_token` 和 `table_id` 不配置时不会阻断整条链路，结果中会返回空 `bitable_records` 和 provider warning。其他数据源也采用部分失败降级：只要至少一个真实数据源成功，就返回已取得的数据和 warnings；如果全部读取失败，Agent 返回 `LARK_CLI_ENTERPRISE_READ_FAILED`。
+
+## 运行真实飞书 Demo
+
+```powershell
+$env:BUIAM_LARK_CLI_BIN='lark-cli'
+$env:BUIAM_LARK_CLI_AS='user'
+$env:LLM_PROVIDER='mock'
+$env:INTENT_GENERATOR_PROVIDER='mock'
+$env:INTENT_JUDGE_PROVIDER='mock'
+
+python scripts/check_lark_cli_provider.py
+python scripts/demo.py
+```
+
+如果需要多维表格数据：
+
+```powershell
+$env:BUIAM_LARK_CLI_BITABLE_APP_TOKEN='<app_token>'
+$env:BUIAM_LARK_CLI_BITABLE_TABLE_ID='<table_id>'
+```

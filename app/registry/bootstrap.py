@@ -37,7 +37,7 @@ DEMO_AGENTS = [
         "agent_id": "enterprise_data_agent",
         "name": "Enterprise Data Agent",
         "agent_type": "enterprise_data_agent",
-        "description": "Provides mock enterprise data for the demo flow.",
+        "description": "Provides delegated enterprise data from Feishu via lark-cli.",
         "endpoint_env": "ENTERPRISE_DATA_AGENT_ENDPOINT",
         "default_endpoint": "http://127.0.0.1:8012/a2a/tasks",
         "static_capabilities": [
@@ -51,7 +51,7 @@ DEMO_AGENTS = [
         "agent_id": "external_search_agent",
         "name": "External Search Agent",
         "agent_type": "external_search_agent",
-        "description": "Provides mock public web results and demonstrates denied escalation.",
+        "description": "Provides public web snapshots and demonstrates denied escalation.",
         "endpoint_env": "EXTERNAL_SEARCH_AGENT_ENDPOINT",
         "default_endpoint": "http://127.0.0.1:8013/a2a/tasks",
         "static_capabilities": ["web.public:read"],

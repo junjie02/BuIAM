@@ -30,8 +30,8 @@ def test_normal_chain_records_credentials_intents_and_audit(servers) -> None:
     body = result["body"]
     trace = result["trace"]
     assert body["agent_id"] == "doc_agent"
-    assert body["result"]["document"]["provider"] == "mock_doc_provider"
-    assert body["result"]["enterprise_data"]["source"] == "mock_enterprise_provider"
+    assert body["result"]["document"]["provider"] == "lark_cli_doc_provider"
+    assert body["result"]["enterprise_data"]["source"] == "lark_cli_enterprise_provider"
 
     decisions = [(log["caller_agent_id"], log["target_agent_id"], log["decision"]) for log in trace["logs"]]
     assert ("doc_agent", "enterprise_data_agent", "allow") in decisions

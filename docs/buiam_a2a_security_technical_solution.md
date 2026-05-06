@@ -4,7 +4,7 @@
 
 本文档合并并替代原 `buiam_delegation_technical_solution.md` 与 `Implementation_scheme_of_identity_and_authentication.md`。原两份文档中的旧路径、旧接口、`local://` 调用、`/delegate/call`、MVP mock store 等内容已经不再代表当前项目状态。
 
-当前 BuIAM 项目是一个基于 FastAPI + SQLite 的 A2A 安全委托系统。业务 Agent 的执行动作仍然使用 mock provider，以便在没有真实飞书 API 的情况下稳定演示和测试；但认证、授权、签名化委托凭证链、意图链、Token 吊销、Token/credential 过期、运行中任务取消和审计追踪都是真实实现。
+?? BuIAM ??????? FastAPI + SQLite ? A2A ????????? Agent ????????? lark-cli ????????????????????????????Token ???Token/credential ??????????????????????
 
 本文档面向项目交付、技术评审、后续开发和安全验收，描述当前代码中的真实设计与实现边界。
 
@@ -94,7 +94,7 @@ external_search_agent: http://127.0.0.1:8013/a2a/tasks
 | `app/store/` | SQLite schema 和各类安全事实/审计数据访问 |
 | `app/runtime/tasks.py` | 单进程 asyncio task registry，用于 revoke 时按 trace 取消任务 |
 | `app/sdk/client.py` | Agent 调用 Gateway 的 A2A client |
-| `examples/agent/` | 三个 demo Agent 服务与 mock/lark_cli provider |
+| `examples/agent/` | ?? demo Agent ??????? lark-cli provider |
 | `examples/generate_identity.py` | 客户端本地生成密钥对 + DID Document + 提交注册 |
 | `scripts/` | demo 启动、bootstrap |
 | `tests/` | pytest 回归测试（76 tests），覆盖全部安全域 |
@@ -107,7 +107,7 @@ external_search_agent: http://127.0.0.1:8013/a2a/tasks
 | `enterprise_data_agent` | `http://127.0.0.1:8012/a2a/tasks` | `feishu.contact:read`、`feishu.calendar:read`、`feishu.wiki:read`、`feishu.bitable:read` | 返回 mock 企业数据；提供 `sleep` 可取消长任务 |
 | `external_search_agent` | `http://127.0.0.1:8013/a2a/tasks` | `web.public:read` | 返回 mock 公网搜索结果；用于演示越权读取企业数据被拒绝 |
 
-后续接入真实飞书 API 时，优先替换 `examples/agent/demo_provider.py` 或各 Agent provider 层，不应改动 Gateway 安全链路。
+???? API ??? `examples/agent/lark_cli_provider.py` ??????????? Gateway ?????
 
 ## 4. 协议与核心模型
 
@@ -792,7 +792,7 @@ Agent 请求由 `app/sdk/client.py` 构造，携带 `DelegationEnvelope` 和 age
 | `BUIAM_USE_MLDSA` | 启用 ML-DSA 后量子签名（`true`/`false`，默认 `false`） |
 | `BUIAM_AUTH_SIGNATURE_ALG` | 签名算法（`BUIAM-RS256` 或 `BUIAM-MLDSA-65`） |
 | `BUIAM_MLDSA_ALG` | ML-DSA 算法变体（默认 `ML-DSA-65`） |
-| `BUIAM_AGENT_PROVIDER_MODE` | Agent provider 模式（`mock`/`lark_cli`） |
+| `BUIAM_LARK_CLI_*` | lark-cli provider ?? |
 | `DOC_AGENT_ENDPOINT` | doc_agent endpoint |
 | `ENTERPRISE_DATA_AGENT_ENDPOINT` | enterprise_data_agent endpoint |
 | `EXTERNAL_SEARCH_AGENT_ENDPOINT` | external_search_agent endpoint |
@@ -989,7 +989,7 @@ AUTH_TOKEN_EXPIRED
 - 当前 capability 是静态字符串集合，尚未支持资源级策略、ABAC/RBAC 或策略 DSL。
 - Gateway 在签发 Token/凭证时需访问实体私钥（custodial demo 模型），生产应改为客户端自签名。
 - 当前未在网络层强制阻止 Agent 直接互连，生产应配合服务网格、mTLS、网络策略或 Gateway-only ingress。
-- 当前业务执行是 mock provider，真实飞书 API 接入仍需替换 Agent provider 层。
+- 当前业务执行是 lark-cli provider，真实飞书 API 接入仍需替换 Agent provider 层。
 - 当前 hash chain 不是完整 Merkle Tree，不提供 sibling proof 或批量 Merkle root。
 
 ## 18. 后续演进路线
@@ -1026,7 +1026,7 @@ AUTH_TOKEN_EXPIRED
 ### 18.5 真实飞书接入
 
 - 保持 Gateway 安全链路不变。
-- 替换 `examples/agent/demo_provider.py`。
+- ?? `examples/agent/lark_cli_provider.py`?
 - 为 doc/contact/calendar/wiki/bitable 等真实 API 增加资源级 capability。
 - 引入飞书 API 错误审计和权限映射。
 

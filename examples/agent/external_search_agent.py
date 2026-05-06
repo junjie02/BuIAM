@@ -4,7 +4,6 @@ import httpx
 
 from app.protocol import AgentTaskResponse, DelegationEnvelope
 from app.sdk.client import A2AClient
-from examples.agent.demo_provider import public_search_results
 
 
 AGENT_ID = "external_search_agent"
@@ -24,7 +23,7 @@ async def handle_task(envelope: DelegationEnvelope) -> AgentTaskResponse:
         result={
             "query": query,
             "items": public_search_results(query),
-            "source": "mock_public_search_provider",
+            "source": "local_public_search_snapshot",
             "restrictions": ["no enterprise Feishu data access"],
         },
     )
@@ -89,3 +88,18 @@ def unsupported(envelope: DelegationEnvelope) -> AgentTaskResponse:
         task_type=envelope.task_type,
         result={"error_code": "UNSUPPORTED_TASK", "message": f"unsupported task_type: {envelope.task_type}"},
     )
+
+
+def public_search_results(query: str) -> list[dict[str, str]]:
+    return [
+        {
+            "title": f"Public result for {query}",
+            "url": "https://example.com/public-agent-report",
+            "summary": "Local public web snapshot used by the runnable demo.",
+        },
+        {
+            "title": "A2A Security Pattern",
+            "url": "https://example.com/a2a-security",
+            "summary": "Public guidance about delegating capabilities across agent boundaries.",
+        },
+    ]

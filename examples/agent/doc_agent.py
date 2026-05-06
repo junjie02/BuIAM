@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from app.protocol import AgentTaskResponse, DelegationEnvelope
 from app.sdk.client import A2AClient
-from examples.agent.demo_provider import render_report
 from examples.agent.provider import ProviderError, write_document
 
 
@@ -107,4 +106,32 @@ def provider_error(envelope: DelegationEnvelope, error: ProviderError) -> AgentT
         trace_id=envelope.trace_id,
         task_type=envelope.task_type,
         result={"error_code": error.code, "message": error.message},
+    )
+
+
+def render_report(*, topic: str, enterprise_data: dict) -> str:
+    contacts = ", ".join(item.get("name", "unknown") for item in enterprise_data.get("contacts", []))
+    events = ", ".join(item.get("summary", "unknown") for item in enterprise_data.get("calendar_events", []))
+    pages = ", ".join(item.get("title", "unknown") for item in enterprise_data.get("wiki_pages", []))
+    blocked = next(
+        (item.get("value", "0") for item in enterprise_data.get("bitable_records", []) if item.get("metric") == "blocked_escalations"),
+        "0",
+    )
+    return "\n".join(
+        [
+            f"# {topic}",
+            "",
+            "## Summary",
+            "The enterprise snapshot was collected through the authorized A2A chain.",
+            "",
+            "## Signals",
+            f"- Key collaborators: {contacts or 'none'}",
+            f"- Calendar signals: {events or 'none'}",
+            f"- Wiki pages: {pages or 'none'}",
+            f"- Blocked escalation count: {blocked}",
+            "",
+            "## Suggested Actions",
+            "- Keep delegation capabilities narrow.",
+            "- Review audit traces after sensitive cross-agent calls.",
+        ]
     )

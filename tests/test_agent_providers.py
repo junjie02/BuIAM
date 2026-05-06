@@ -3,40 +3,9 @@ from __future__ import annotations
 import asyncio
 
 from app.protocol import AgentTaskResponse, AuthContext, DelegationEnvelope
-from examples.agent import lark_cli_provider, provider
+from examples.agent import lark_cli_provider
 from examples.agent.doc_agent import handle_task
-
-
-def test_default_provider_mode_uses_mock_snapshot(monkeypatch) -> None:
-    monkeypatch.delenv("BUIAM_AGENT_PROVIDER_MODE", raising=False)
-
-    result = asyncio.run(
-        provider.enterprise_snapshot(
-            topic="Provider Test",
-            user_task="Read enterprise data",
-            trace_id="trace-mock",
-        )
-    )
-
-    assert result["source"] == "mock_enterprise_provider"
-    assert result["contacts"]
-
-
-def test_invalid_provider_mode_is_rejected(monkeypatch) -> None:
-    monkeypatch.setenv("BUIAM_AGENT_PROVIDER_MODE", "bad-mode")
-
-    try:
-        asyncio.run(
-            provider.write_document(
-                title="Invalid Mode",
-                content="content",
-                trace_id="trace-invalid",
-            )
-        )
-    except provider.ProviderError as exc:
-        assert exc.code == "PROVIDER_MODE_INVALID"
-    else:
-        raise AssertionError("ProviderError was not raised for invalid mode")
+from examples.agent.errors import ProviderError
 
 
 def test_lark_cli_enterprise_snapshot_is_normalized(monkeypatch) -> None:
@@ -82,9 +51,68 @@ def test_lark_cli_enterprise_snapshot_is_normalized(monkeypatch) -> None:
     assert result["provider_metadata"]["mode"] == "lark_cli"
 
 
+def test_lark_cli_enterprise_snapshot_keeps_partial_results(monkeypatch) -> None:
+    async def fake_contacts() -> object:
+        raise ProviderError("LARK_CLI_FAILED", "contact denied")
+
+    async def fake_calendar() -> object:
+        return {"data": {"items": [{"summary": "Q2 Planning", "start_time": "2026-04-27 10:00"}]}}
+
+    async def fake_wiki() -> object:
+        return {"data": {"items": []}}
+
+    async def fake_bitable() -> object:
+        raise ProviderError("LARK_CLI_BITABLE_CONFIG_MISSING", "bitable config missing")
+
+    monkeypatch.setattr(lark_cli_provider, "_query_contacts", fake_contacts)
+    monkeypatch.setattr(lark_cli_provider, "_query_calendar", fake_calendar)
+    monkeypatch.setattr(lark_cli_provider, "_query_wiki", fake_wiki)
+    monkeypatch.setattr(lark_cli_provider, "_query_bitable", fake_bitable)
+
+    result = asyncio.run(
+        lark_cli_provider.enterprise_snapshot(
+            topic="Partial Enterprise Report",
+            user_task="Collect live enterprise data",
+            trace_id="trace-partial",
+        )
+    )
+
+    assert result["calendar_events"][0]["summary"] == "Q2 Planning"
+    assert result["contacts"] == []
+    assert result["bitable_records"] == []
+    assert "contacts: contact denied" in result["provider_metadata"]["warnings"]
+    assert "bitable: bitable config missing" in result["provider_metadata"]["warnings"]
+
+
+def test_lark_cli_enterprise_snapshot_fails_when_all_sources_fail(monkeypatch) -> None:
+    async def fake_failure() -> object:
+        raise ProviderError("LARK_CLI_FAILED", "not authenticated")
+
+    monkeypatch.setattr(lark_cli_provider, "_query_contacts", fake_failure)
+    monkeypatch.setattr(lark_cli_provider, "_query_calendar", fake_failure)
+    monkeypatch.setattr(lark_cli_provider, "_query_wiki", fake_failure)
+    monkeypatch.setattr(lark_cli_provider, "_query_bitable", fake_failure)
+
+    try:
+        asyncio.run(
+            lark_cli_provider.enterprise_snapshot(
+                topic="Failed Enterprise Report",
+                user_task="Collect live enterprise data",
+                trace_id="trace-failed",
+            )
+        )
+    except ProviderError as exc:
+        assert exc.code == "LARK_CLI_ENTERPRISE_READ_FAILED"
+        assert "not authenticated" in exc.message
+    else:
+        raise AssertionError("ProviderError was not raised when every source failed")
+
+
 def test_lark_cli_write_document_uses_cli_response(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
     async def fake_run(arguments: list[str], *, data: dict | None = None) -> object:
-        assert "docs" in arguments
+        calls.append(arguments)
         assert data is None
         return {"data": {"document_id": "doc_real_123", "url": "https://feishu.cn/docx/doc_real_123"}}
 
@@ -98,6 +126,7 @@ def test_lark_cli_write_document_uses_cli_response(monkeypatch) -> None:
         )
     )
 
+    assert calls[0][0:2] == ["docs", "+create"]
     assert result["document_id"] == "doc_real_123"
     assert result["url"] == "https://feishu.cn/docx/doc_real_123"
     assert result["provider"] == "lark_cli_doc_provider"
@@ -113,8 +142,6 @@ def test_doc_agent_propagates_downstream_provider_error(monkeypatch) -> None:
         )
 
     monkeypatch.setattr("examples.agent.doc_agent.A2AClient.call_agent", fake_call_agent)
-    monkeypatch.delenv("BUIAM_AGENT_PROVIDER_MODE", raising=False)
-
     envelope = DelegationEnvelope(
         trace_id="trace-doc-agent",
         request_id="request-doc-agent",

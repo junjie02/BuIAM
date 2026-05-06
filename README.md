@@ -1,6 +1,6 @@
 # BuIAM A2A 安全委托 Demo
 
-BuIAM 是一个基于 FastAPI 的 Agent-to-Agent 安全委托协议实现。业务 Agent 的动作可以使用确定性的 mock provider 跑通本地演示和测试；Gateway 侧的安全逻辑是真实实现，包括 DID 文档、VC 形态的签名委托凭证、意图链校验、Token 过期/吊销、运行中任务取消和审计追踪。
+BuIAM 是一个基于 FastAPI 的 Agent-to-Agent 安全委托协议实现。业务 Agent 通过本机 `lark-cli` 读取/写入真实飞书数据；Gateway 侧的安全逻辑是真实实现，包括 DID 文档、VC 形态的签名委托凭证、意图链校验、Token 过期/吊销、运行中任务取消和审计追踪。
 
 ## 当前能力
 
@@ -13,9 +13,7 @@ BuIAM 是一个基于 FastAPI 的 Agent-to-Agent 安全委托协议实现。业�
 - Root task 和 Agent-to-Agent 调用都会创建或校验签名 intent node。
 - Bearer Token 支持签发、校验、introspection、过期、吊销和 credential 绑定。
 - 审计 trace 汇总 audit logs、auth events、delegation credentials 和 intent tree。
-- Demo Agent provider 支持两种模式：
-  - `mock`：确定性本地数据，推荐用于测试和基线演示。
-  - `lark_cli`：可选，通过本机 `lark-cli` 读取/写入真实飞书数据。
+- Demo Agent provider 使用本机 `lark-cli` 读取/写入真实飞书数据。
 
 ## 目录结构
 
@@ -108,13 +106,13 @@ $env:BUIAM_AUTH_SIGNATURE_ALG='BUIAM-MLDSA-65'
 
 ## 运行 Demo
 
-推荐先用 mock 模式跑通基线：
+运行 Demo 前先确认本机已安装并登录 `lark-cli`：
 
 ```powershell
-$env:BUIAM_AGENT_PROVIDER_MODE='mock'
 $env:LLM_PROVIDER='mock'
 $env:INTENT_GENERATOR_PROVIDER='mock'
 $env:INTENT_JUDGE_PROVIDER='mock'
+python scripts/check_lark_cli_provider.py
 python scripts/demo.py
 ```
 
@@ -146,7 +144,6 @@ python examples/generate_identity.py --subject-id external_search_agent --servic
 只测试本项目的 `tests/`，不要让 pytest 扫到 `third_party/liboqs/tests`。
 
 ```powershell
-$env:BUIAM_AGENT_PROVIDER_MODE='mock'
 $env:LLM_PROVIDER='mock'
 $env:INTENT_GENERATOR_PROVIDER='mock'
 $env:INTENT_JUDGE_PROVIDER='mock'
@@ -195,24 +192,28 @@ $env:INTENT_JUDGE_PROVIDER='mock'
 
 使用真实飞书数据时，Gateway 安全链路不变，只替换 demo Agent 的 provider 层。
 
-启用真实飞书 provider：
+飞书 provider 配置：
 
 ```powershell
-$env:BUIAM_AGENT_PROVIDER_MODE='lark_cli'
 $env:BUIAM_LARK_CLI_BIN='lark-cli'
 $env:BUIAM_LARK_CLI_AS='user'
-$env:BUIAM_LARK_CLI_BITABLE_APP_TOKEN='app_token'
-$env:BUIAM_LARK_CLI_BITABLE_TABLE_ID='tbl_id'
 ```
 
-单独安装并登录 `lark-cli`：
+安装和登录：
 
 ```powershell
-npm install -g @larksuiteoapi/cli
+npm install -g @larksuite/cli
+lark-cli config init
 lark-cli auth login --recommend
 ```
 
-测试和稳定演示推荐使用 `mock`。只有确实需要访问真实飞书数据时再切到 `lark_cli`。
+本地自检：
+
+```powershell
+python scripts/check_lark_cli_provider.py
+```
+
+多维表格需要额外设置 `BUIAM_LARK_CLI_BITABLE_APP_TOKEN` 和 `BUIAM_LARK_CLI_BITABLE_TABLE_ID`，否则会返回空记录和 warning，但不会中断整条企业数据读取链路。
 
 ## 提交注意事项
 

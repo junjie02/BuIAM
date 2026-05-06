@@ -4,13 +4,14 @@ import asyncio
 import json
 import os
 import shlex
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid5
 
-from examples.agent.provider import ProviderError
+from examples.agent.errors import ProviderError
 
 
-def _cli_base_command(*, include_format: bool = True) -> list[str]:
+def _cli_binary_and_extra_args() -> list[str]:
     command = os.getenv("BUIAM_LARK_CLI_BIN", "lark-cli").strip()
     if not command:
         raise ProviderError("LARK_CLI_BIN_MISSING", "BUIAM_LARK_CLI_BIN is empty")
@@ -19,14 +20,23 @@ def _cli_base_command(*, include_format: bool = True) -> list[str]:
     parts = [command]
     if extra_args:
         parts.extend(shlex.split(extra_args, posix=False))
+    return parts
 
+
+def _identity_args() -> list[str]:
     identity = os.getenv("BUIAM_LARK_CLI_AS", "user").strip().lower()
     if identity not in {"user", "bot"}:
         raise ProviderError("LARK_CLI_AS_INVALID", f"unsupported lark-cli identity: {identity}")
-    parts.extend(["--as", identity])
-    if include_format:
-        parts.extend(["--format", "json"])
-    return parts
+    return ["--as", identity]
+
+
+def _format_args(arguments: list[str]) -> list[str]:
+    return ["--format", "json"] if _supports_format_flag(arguments) else []
+
+
+def _cli_command(arguments: list[str]) -> list[str]:
+    # lark-cli documents identity and output flags as command-level options.
+    return [*_cli_binary_and_extra_args(), *arguments, *_identity_args(), *_format_args(arguments)]
 
 
 def _timeout_seconds() -> float:
@@ -41,7 +51,7 @@ def _timeout_seconds() -> float:
 
 
 async def _run_cli_json(arguments: list[str], *, data: dict | None = None) -> object:
-    command = [*_cli_base_command(include_format=_supports_format_flag(arguments)), *arguments]
+    command = _cli_command(arguments)
     stdin = None
     if data is not None:
         stdin = asyncio.subprocess.PIPE
@@ -96,8 +106,8 @@ def _iter_items(value: object) -> list[dict]:
     return []
 
 
-def _supports_format_flag(arguments: list[str]) -> bool:
-    return not arguments or arguments[0] != "docs"
+def _supports_format_flag(_arguments: list[str]) -> bool:
+    return not _arguments or _arguments[0] not in {"docs", "version"}
 
 
 def _coerce_text(value: object) -> str:
@@ -234,30 +244,39 @@ async def _query_bitable() -> object:
     return await _run_cli_json(["api", "GET", path, "--params", json.dumps(params, ensure_ascii=False)])
 
 
+async def _optional_query(
+    label: str,
+    query: Callable[[], Awaitable[object]],
+    normalize: Callable[[object], list[dict[str, str]]],
+    warnings: list[str],
+) -> list[dict[str, str]]:
+    try:
+        payload = await query()
+    except ProviderError as exc:
+        warnings.append(f"{label}: {exc.message}")
+        return []
+    return normalize(payload)
+
+
 async def enterprise_snapshot(*, topic: str, user_task: str, trace_id: str) -> dict:
     warnings: list[str] = []
 
-    contacts_payload, calendar_payload, wiki_payload = await asyncio.gather(
-        _query_contacts(),
-        _query_calendar(),
-        _query_wiki(),
+    contacts, calendar_events, wiki_pages, bitable_records = await asyncio.gather(
+        _optional_query("contacts", _query_contacts, _normalize_contacts, warnings),
+        _optional_query("calendar", _query_calendar, _normalize_calendar_events, warnings),
+        _optional_query("wiki", _query_wiki, _normalize_wiki_pages, warnings),
+        _optional_query("bitable", _query_bitable, _normalize_bitable_records, warnings),
     )
 
-    bitable_records: list[dict[str, str]]
-    try:
-        bitable_payload = await _query_bitable()
-    except ProviderError as exc:
-        warnings.append(exc.message)
-        bitable_records = []
-    else:
-        bitable_records = _normalize_bitable_records(bitable_payload)
+    if warnings and not any([contacts, calendar_events, wiki_pages, bitable_records]):
+        raise ProviderError("LARK_CLI_ENTERPRISE_READ_FAILED", "; ".join(warnings))
 
     return {
         "source": "lark_cli_enterprise_provider",
         "topic": topic,
-        "contacts": _normalize_contacts(contacts_payload),
-        "calendar_events": _normalize_calendar_events(calendar_payload),
-        "wiki_pages": _normalize_wiki_pages(wiki_payload),
+        "contacts": contacts,
+        "calendar_events": calendar_events,
+        "wiki_pages": wiki_pages,
         "bitable_records": bitable_records,
         "provider_metadata": {
             "mode": "lark_cli",
@@ -269,12 +288,47 @@ async def enterprise_snapshot(*, topic: str, user_task: str, trace_id: str) -> d
 
 
 async def write_document(*, title: str, content: str, trace_id: str) -> dict:
-    arguments = ["docs", "+create", "--title", title, "--markdown", content]
+    formatted_content = f"<title>{title}</title>\n{content}"
     folder_token = os.getenv("BUIAM_LARK_CLI_DOC_FOLDER_TOKEN", "").strip()
+    create_variants = [
+        [
+            "docs",
+            "+create",
+            "--api-version",
+            os.getenv("BUIAM_LARK_CLI_DOC_API_VERSION", "v2"),
+            "--doc-format",
+            os.getenv("BUIAM_LARK_CLI_DOC_FORMAT", "markdown"),
+            "--content",
+            formatted_content,
+        ],
+        [
+            "docs",
+            "+create",
+            "--title",
+            title,
+            "--markdown",
+            content,
+        ],
+    ]
     if folder_token:
-        arguments.extend(["--folder-token", folder_token])
+        for arguments in create_variants:
+            arguments.extend(["--folder-token", folder_token])
 
-    response = await _run_cli_json(arguments)
+    response = None
+    last_error: ProviderError | None = None
+    for arguments in create_variants:
+        try:
+            response = await _run_cli_json(arguments)
+        except ProviderError as exc:
+            last_error = exc
+            if exc.code not in {"LARK_CLI_FAILED", "LARK_CLI_OUTPUT_INVALID"}:
+                raise
+        else:
+            break
+    if response is None:
+        assert last_error is not None
+        raise last_error
+
     payload = _unwrap_data(response)
     document_id = f"doc_cli_{uuid5(NAMESPACE_URL, trace_id).hex[:12]}"
 

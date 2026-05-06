@@ -62,6 +62,7 @@ from app.registry.bootstrap import bootstrap_demo_identities_locally
 from app.store.delegation_credentials import get_credential
 from app.store.intent_tree import get_intent_node, row_to_intent_node
 from app.store.schema import DB_PATH, init_schema
+from examples.agent import lark_cli_provider
 from examples.agent.doc_service import app as doc_app
 from examples.agent.enterprise_data_service import app as enterprise_app
 from examples.agent.external_search_service import app as external_app
@@ -109,6 +110,50 @@ def reset_runtime_db() -> None:
         Path(DB_PATH).unlink()
     init_schema()
     bootstrap_demo_identities_locally()
+    install_test_lark_provider()
+
+
+def install_test_lark_provider() -> None:
+    async def enterprise_snapshot(*, topic: str, user_task: str, trace_id: str) -> dict:
+        return {
+            "source": "lark_cli_enterprise_provider",
+            "topic": topic,
+            "contacts": [
+                {"name": "Alice Chen", "department": "Product", "role": "PM"},
+                {"name": "Bo Zhang", "department": "Engineering", "role": "Tech Lead"},
+            ],
+            "calendar_events": [
+                {"summary": "Q2 Planning", "start": "2026-04-27 10:00", "owner": "Alice Chen"},
+                {"summary": "Agent Security Review", "start": "2026-04-28 15:00", "owner": "Bo Zhang"},
+            ],
+            "wiki_pages": [
+                {"title": "Agent Delegation Policy", "updated_by": "Security Team"},
+                {"title": "Feishu Report Workflow", "updated_by": "Operations Team"},
+            ],
+            "bitable_records": [
+                {"record_id": "rec_test_001", "metric": "delegation_success_rate", "value": "98%"},
+                {"record_id": "rec_test_002", "metric": "blocked_escalations", "value": "3"},
+            ],
+            "provider_metadata": {
+                "mode": "lark_cli",
+                "trace_id": trace_id,
+                "user_task": user_task,
+                "warnings": [],
+            },
+        }
+
+    async def write_document(*, title: str, content: str, trace_id: str) -> dict:
+        document_id = f"doc_test_{trace_id[:12]}"
+        return {
+            "document_id": document_id,
+            "title": title,
+            "url": f"https://feishu.cn/docx/{document_id}",
+            "content_length": len(content),
+            "provider": "lark_cli_doc_provider",
+        }
+
+    lark_cli_provider.enterprise_snapshot = enterprise_snapshot
+    lark_cli_provider.write_document = write_document
 
 
 def build_server_handles() -> list[ServerHandle]:
