@@ -107,7 +107,7 @@ def _iter_items(value: object) -> list[dict]:
 
 
 def _supports_format_flag(_arguments: list[str]) -> bool:
-    return not _arguments or _arguments[0] not in {"docs", "version"}
+    return not _arguments or _arguments[0] not in {"base", "docs", "version"}
 
 
 def _coerce_text(value: object) -> str:
@@ -186,6 +186,10 @@ def _normalize_wiki_pages(payload: object) -> list[dict[str, str]]:
 
 
 def _normalize_bitable_records(payload: object) -> list[dict[str, str]]:
+    base_rows = _normalize_bitable_base_rows(payload)
+    if base_rows:
+        return base_rows
+
     records = []
     for item in _iter_items(payload)[:10]:
         fields = item.get("fields", item)
@@ -210,6 +214,41 @@ def _normalize_bitable_records(payload: object) -> list[dict[str, str]]:
             }
         )
     return records
+
+
+def _normalize_bitable_base_rows(payload: object) -> list[dict[str, str]]:
+    data = _unwrap_data(payload)
+    if not isinstance(data, dict):
+        return []
+
+    rows = data.get("data")
+    fields = data.get("fields")
+    record_ids = data.get("record_id_list")
+    if not isinstance(rows, list) or not isinstance(fields, list):
+        return []
+
+    normalized = []
+    for index, row in enumerate(rows[:10]):
+        if not isinstance(row, list):
+            continue
+        values = {
+            _coerce_text(field): _coerce_text(value[0] if isinstance(value, list) and value else value)
+            for field, value in zip(fields, row, strict=False)
+            if field and value is not None
+        }
+        if not values:
+            continue
+        record_id = ""
+        if isinstance(record_ids, list) and index < len(record_ids):
+            record_id = _coerce_text(record_ids[index])
+        normalized.append(
+            {
+                "record_id": record_id or f"record_{index + 1}",
+                "metric": ", ".join(values.keys()),
+                "value": json.dumps(values, ensure_ascii=False),
+            }
+        )
+    return normalized
 
 
 async def _query_contacts() -> object:
@@ -241,7 +280,26 @@ async def _query_bitable() -> object:
         )
     path = f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/records"
     params = {"page_size": int(os.getenv("BUIAM_LARK_CLI_BITABLE_PAGE_SIZE", "10"))}
-    return await _run_cli_json(["api", "GET", path, "--params", json.dumps(params, ensure_ascii=False)])
+    try:
+        return await _run_cli_json(["api", "GET", path, "--params", json.dumps(params, ensure_ascii=False)])
+    except ProviderError as exc:
+        if exc.code != "LARK_CLI_FAILED":
+            raise
+
+    arguments = [
+        "base",
+        "+record-list",
+        "--base-token",
+        app_token,
+        "--table-id",
+        table_id,
+        "--limit",
+        str(params["page_size"]),
+    ]
+    view_id = os.getenv("BUIAM_LARK_CLI_BITABLE_VIEW_ID", "").strip()
+    if view_id:
+        arguments.extend(["--view-id", view_id])
+    return await _run_cli_json(arguments)
 
 
 async def _optional_query(

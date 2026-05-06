@@ -8,7 +8,13 @@ from examples.agent.doc_agent import handle_task
 from examples.agent.errors import ProviderError
 
 
+ORIGINAL_ENTERPRISE_SNAPSHOT = lark_cli_provider.enterprise_snapshot
+ORIGINAL_WRITE_DOCUMENT = lark_cli_provider.write_document
+
+
 def test_lark_cli_enterprise_snapshot_is_normalized(monkeypatch) -> None:
+    monkeypatch.setattr(lark_cli_provider, "enterprise_snapshot", ORIGINAL_ENTERPRISE_SNAPSHOT)
+
     async def fake_contacts() -> object:
         return {"data": {"items": [{"name": "Alice Chen", "department_name": "Product", "job_title": "PM"}]}}
 
@@ -52,6 +58,8 @@ def test_lark_cli_enterprise_snapshot_is_normalized(monkeypatch) -> None:
 
 
 def test_lark_cli_enterprise_snapshot_keeps_partial_results(monkeypatch) -> None:
+    monkeypatch.setattr(lark_cli_provider, "enterprise_snapshot", ORIGINAL_ENTERPRISE_SNAPSHOT)
+
     async def fake_contacts() -> object:
         raise ProviderError("LARK_CLI_FAILED", "contact denied")
 
@@ -84,7 +92,53 @@ def test_lark_cli_enterprise_snapshot_keeps_partial_results(monkeypatch) -> None
     assert "bitable: bitable config missing" in result["provider_metadata"]["warnings"]
 
 
+def test_lark_cli_bitable_falls_back_to_base_record_list(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    async def fake_run(arguments: list[str], *, data: dict | None = None) -> object:
+        calls.append(arguments)
+        if arguments[:3] == ["api", "GET", "/open-apis/bitable/v1/apps/app_123/tables/tbl_123/records"]:
+            raise ProviderError("LARK_CLI_FAILED", "Permission denied")
+        return {
+            "data": {
+                "data": [["Alice", ["25"], "Engineering"]],
+                "fields": ["姓名", "年龄", "部门"],
+                "record_id_list": ["rec_001"],
+            }
+        }
+
+    monkeypatch.setenv("BUIAM_LARK_CLI_BITABLE_APP_TOKEN", "app_123")
+    monkeypatch.setenv("BUIAM_LARK_CLI_BITABLE_TABLE_ID", "tbl_123")
+    monkeypatch.setenv("BUIAM_LARK_CLI_BITABLE_VIEW_ID", "vew_123")
+    monkeypatch.setattr(lark_cli_provider, "_run_cli_json", fake_run)
+
+    payload = asyncio.run(lark_cli_provider._query_bitable())
+    records = lark_cli_provider._normalize_bitable_records(payload)
+
+    assert calls[1] == [
+        "base",
+        "+record-list",
+        "--base-token",
+        "app_123",
+        "--table-id",
+        "tbl_123",
+        "--limit",
+        "10",
+        "--view-id",
+        "vew_123",
+    ]
+    assert records == [
+        {
+            "record_id": "rec_001",
+            "metric": "姓名, 年龄, 部门",
+            "value": '{"姓名": "Alice", "年龄": "25", "部门": "Engineering"}',
+        }
+    ]
+
+
 def test_lark_cli_enterprise_snapshot_fails_when_all_sources_fail(monkeypatch) -> None:
+    monkeypatch.setattr(lark_cli_provider, "enterprise_snapshot", ORIGINAL_ENTERPRISE_SNAPSHOT)
+
     async def fake_failure() -> object:
         raise ProviderError("LARK_CLI_FAILED", "not authenticated")
 
@@ -109,6 +163,8 @@ def test_lark_cli_enterprise_snapshot_fails_when_all_sources_fail(monkeypatch) -
 
 
 def test_lark_cli_write_document_uses_cli_response(monkeypatch) -> None:
+    monkeypatch.setattr(lark_cli_provider, "write_document", ORIGINAL_WRITE_DOCUMENT)
+
     calls: list[list[str]] = []
 
     async def fake_run(arguments: list[str], *, data: dict | None = None) -> object:
