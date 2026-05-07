@@ -1,6 +1,6 @@
 # BuIAM A2A 安全委托 Demo
 
-BuIAM 是一个基于 FastAPI 的 Agent-to-Agent 安全委托协议实现。业务 Agent 通过本机 `lark-cli` 读取/写入真实飞书数据；Gateway 侧的安全逻辑是真实实现，包括 DID 文档、VC 形态的签名委托凭证、意图链校验、Token 过期/吊销、运行中任务取消和审计追踪。
+BuIAM 是一个基于 FastAPI 的 Agent-to-Agent 安全委托协议实现。业务 Agent 通过本机 `lark-cli` 读取/写入真实飞书数据；Gateway 侧实现安全逻辑，包括 DID 文档、VC 形态的签名委托凭证、意图链校验、Token 过期/吊销、运行中任务取消和审计追踪。
 
 ## 当前能力
 
@@ -109,9 +109,6 @@ $env:BUIAM_AUTH_SIGNATURE_ALG='BUIAM-MLDSA-65'
 运行 Demo 前先确认本机已安装并登录 `lark-cli`：
 
 ```powershell
-$env:LLM_PROVIDER='mock'
-$env:INTENT_GENERATOR_PROVIDER='mock'
-$env:INTENT_JUDGE_PROVIDER='mock'
 python scripts/check_lark_cli_provider.py
 python scripts/demo.py
 ```
@@ -144,16 +141,13 @@ python examples/generate_identity.py --subject-id external_search_agent --servic
 只测试本项目的 `tests/`，不要让 pytest 扫到 `third_party/liboqs/tests`。
 
 ```powershell
-$env:LLM_PROVIDER='mock'
-$env:INTENT_GENERATOR_PROVIDER='mock'
-$env:INTENT_JUDGE_PROVIDER='mock'
 .venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider
 ```
 
 当前本地基线：
 
 ```text
-63 passed
+77 passed
 ```
 
 ## 安全测试
@@ -215,22 +209,3 @@ python scripts/check_lark_cli_provider.py
 
 多维表格需要额外设置 `BUIAM_LARK_CLI_BITABLE_APP_TOKEN` 和 `BUIAM_LARK_CLI_BITABLE_TABLE_ID`，否则会返回空记录和 warning，但不会中断整条企业数据读取链路。
 
-## 提交注意事项
-
-不要提交：
-
-- `.env`
-- 真实 API Key
-- `data/` 下生成的数据库
-- 生成的密钥对
-- `.venv`
-- `third_party/liboqs/build`
-- `third_party/liboqs/install`
-
-共享 liboqs 的正确方式是提交 submodule 元数据和 submodule 指针：
-
-```powershell
-git add .gitmodules third_party/liboqs
-git commit -m "Fix liboqs submodule metadata"
-git push
-```
